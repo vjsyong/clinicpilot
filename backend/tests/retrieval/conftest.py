@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import numpy as np
@@ -68,9 +68,39 @@ class FakeEmbedder:
         return _features(text)
 
 
+class FakeReranker:
+    """Deterministic reranker; zero scores preserve the fused order."""
+
+    model_name = "fake-reranker"
+    revision = "test-v1"
+
+    def __init__(
+        self,
+        scorer: Callable[[str], float] | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self.scorer = scorer or (lambda _text: 0.0)
+        self.error = error
+        self.calls: list[tuple[str, list[str]]] = []
+
+    def prewarm(self) -> None:
+        return None
+
+    def rerank(self, query: str, texts: Sequence[str]) -> list[float]:
+        self.calls.append((query, list(texts)))
+        if self.error is not None:
+            raise self.error
+        return [float(self.scorer(text)) for text in texts]
+
+
 @pytest.fixture
 def fake_embedder() -> FakeEmbedder:
     return FakeEmbedder()
+
+
+@pytest.fixture
+def fake_reranker() -> FakeReranker:
+    return FakeReranker()
 
 
 @pytest.fixture

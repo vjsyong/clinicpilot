@@ -4,8 +4,10 @@ Run: 2026-10-22 (local, temporary SQLite database, real DeepSeek endpoint,
 real booking REST API, real retrieval index).
 
 - Model: `deepseek-flash` (DeepSeek OpenAI-compatible endpoint)
-- Embedding model: `sentence-transformers/all-MiniLM-L6-v2` @
-  `1110a243fdf4706b3f48f1d95db1a4f5529b4d41`
+- Embedding model: `Qwen/Qwen3-Embedding-0.6B` (FastEmbed/ONNX) @
+  `af95f2c416ffe9379369ad64f9113e865db6112c`
+- Reranker: `jinaai/jina-reranker-v1-turbo-en` (FastEmbed/ONNX) @
+  `b8c14f4e723d9e0aab4732a7b7b93741eeeb77c2`
 - Runner: `uv run --project backend python backend/evals/run.py`
 - Result: **8/8 cases passed, 0 failed**
 

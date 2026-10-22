@@ -220,7 +220,7 @@ describe("API client", () => {
     const status = {
       ready: true,
       records: 11,
-      model: "sentence-transformers/all-MiniLM-L6-v2",
+      model: "Qwen/Qwen3-Embedding-0.6B",
       revision: "rev",
     };
     const fetchMock = vi.fn(async (input: string) =>

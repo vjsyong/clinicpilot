@@ -1,12 +1,13 @@
-"""Deterministic retrieval evaluation over the real local embedding model.
+"""Deterministic retrieval evaluation over the real local models.
 
 Usage (from the repository root):
 
     uv run --project backend python backend/evals/retrieval.py
 
 This is not a pytest module. It builds the CSV-backed index with the pinned
-MiniLM embedder and checks expected record IDs in the top-k results. It never
-calls DeepSeek and does not touch the application database.
+Qwen3 embedder and jina cross-encoder reranker and checks expected record IDs in
+the top-k results. It never calls DeepSeek and does not touch the application
+database.
 """
 
 from __future__ import annotations
@@ -67,6 +68,8 @@ async def _run(settings: Any, cases: list[dict[str, Any]]) -> dict[str, Any]:
         "status": "passed" if passed == len(results) else "failed",
         "model": settings.embedding_model,
         "revision": settings.embedding_revision,
+        "reranker": settings.reranker_model if settings.reranker_enabled else None,
+        "reranker_revision": settings.reranker_revision if settings.reranker_enabled else None,
         "summary": {"total": len(results), "passed": passed, "failed": len(results) - passed},
         "cases": results,
     }

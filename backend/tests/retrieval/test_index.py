@@ -5,7 +5,7 @@ import itertools
 import pytest
 from app.retrieval.index import build_knowledge_index
 from tests.conftest import DBHarness
-from tests.retrieval.conftest import FakeEmbedder
+from tests.retrieval.conftest import FakeEmbedder, FakeReranker
 
 KNOWN_RECORD_IDS = {
     "C001",
@@ -22,14 +22,28 @@ KNOWN_RECORD_IDS = {
 }
 
 
-async def _csv_index(settings, embedder: FakeEmbedder):
-    index = build_knowledge_index(settings, None, embedder=embedder)
+async def _csv_index(
+    settings,
+    embedder: FakeEmbedder,
+    reranker: FakeReranker | None = None,
+):
+    index = build_knowledge_index(
+        settings,
+        None,
+        embedder=embedder,
+        reranker=reranker or FakeReranker(),
+    )
     await index.prewarm()
     return index
 
 
 async def test_ready_is_false_until_prewarm(retrieval_settings, fake_embedder) -> None:
-    index = build_knowledge_index(retrieval_settings, None, embedder=fake_embedder)
+    index = build_knowledge_index(
+        retrieval_settings,
+        None,
+        embedder=fake_embedder,
+        reranker=FakeReranker(),
+    )
     assert index.ready() is False
     with pytest.raises(RuntimeError, match="prewarm"):
         index.search("D104")
@@ -117,7 +131,12 @@ async def test_results_carry_matching_source_refs(retrieval_settings, fake_embed
 
 
 async def test_db_backed_index_uses_session_factory(db: DBHarness, fake_embedder) -> None:
-    index = build_knowledge_index(db.settings, db.session_factory, embedder=fake_embedder)
+    index = build_knowledge_index(
+        db.settings,
+        db.session_factory,
+        embedder=fake_embedder,
+        reranker=FakeReranker(),
+    )
 
     await index.prewarm()
 
@@ -175,3 +194,49 @@ async def test_search_and_search_evidence_agree(retrieval_settings, fake_embedde
     assert [document.document_id for document in documents] == [
         item.document.document_id for item in evidence
     ]
+
+
+async def test_reranker_reorders_and_reports_channel(retrieval_settings, fake_embedder) -> None:
+    reranker = FakeReranker(lambda text: 10.0 if "Sunset" in text else 0.0)
+    index = await _csv_index(retrieval_settings, fake_embedder, reranker=reranker)
+
+    evidence = index.search_evidence("clinic", limit=5)
+
+    assert evidence[0].document.record_id == "C002"
+    assert "rerank" in evidence[0].channels
+    assert reranker.calls
+
+
+async def test_exact_matches_stay_ahead_of_reranker(retrieval_settings, fake_embedder) -> None:
+    reranker = FakeReranker(lambda text: -100.0 if "D104" in text else 100.0)
+    index = await _csv_index(retrieval_settings, fake_embedder, reranker=reranker)
+
+    evidence = index.search_evidence("D104", limit=5)
+
+    assert evidence[0].document.record_id == "D104"
+    assert "exact" in evidence[0].channels
+    assert "rerank" in evidence[0].channels
+    assert all(item.score >= next_item.score for item, next_item in itertools.pairwise(evidence))
+
+
+async def test_reranker_failure_falls_back_to_hybrid(retrieval_settings, fake_embedder) -> None:
+    failing = FakeReranker(error=RuntimeError("reranker unavailable"))
+    baseline = await _csv_index(retrieval_settings, fake_embedder)
+    index = await _csv_index(retrieval_settings, fake_embedder, reranker=failing)
+
+    expected = [item.document.record_id for item in baseline.search_evidence("my knee hurts")]
+    evidence = index.search_evidence("my knee hurts")
+
+    assert [item.document.record_id for item in evidence] == expected
+    assert all("rerank" not in item.channels for item in evidence)
+
+
+async def test_disabled_reranker_skips_rerank_channel(retrieval_settings, fake_embedder) -> None:
+    settings = retrieval_settings.model_copy(update={"reranker_enabled": False})
+    index = build_knowledge_index(settings, None, embedder=fake_embedder)
+    await index.prewarm()
+
+    evidence = index.search_evidence("my knee hurts")
+
+    assert evidence
+    assert all("rerank" not in item.channels for item in evidence)

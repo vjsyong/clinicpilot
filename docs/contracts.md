@@ -291,13 +291,16 @@ Confirmation rule (conservative, server-side):
 
 One document per row: 2 clinics, 4 doctors, 5 treatments (11 total). Every
 result carries `source_file` and `record_id`. Embeddings are
-`sentence-transformers/all-MiniLM-L6-v2` pinned at revision
-`1110a243fdf4706b3f48f1d95db1a4f5529b4d41`, normalized, in-memory. Retrieval
+`Qwen/Qwen3-Embedding-0.6B` (FastEmbed/ONNX, 1024 dimensions), normalized,
+in-memory, with the query instruction prefix applied only to queries. Retrieval
 fuses three channels with reciprocal rank fusion: exact ID/name/alias matches, a
 field-weighted BM25 channel over text and metadata, and dense cosine similarity.
-Evidence results add `score`, `channels`, `excerpt`, and a `[doc:<record_id>]`
-citation for the model and UI. Cache vectors with an input/model fingerprint.
-Prewarm before readiness. Private patient records never enter the shared index.
+The fused candidates are then reranked with the
+`jinaai/jina-reranker-v1-turbo-en` cross-encoder. Exact matches always remain
+ahead of the reranked candidates. Evidence results add `score`, `channels`,
+`excerpt`, and a `[doc:<record_id>]` citation for the model and UI. Cache vectors
+with an input/model fingerprint. Prewarm both models before readiness. Private
+patient records never enter the shared index.
 
 ## Frontend
 

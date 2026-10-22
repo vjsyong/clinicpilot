@@ -166,7 +166,7 @@ Recheck state before provisioning. Do not assume credentials, free VM IDs, IP ad
 | Generation model | Configurable; initial value `deepseek-flash` |
 | Endpoint | `https://api.deepseek.com` |
 | Generation mode | Non-thinking initially |
-| Embeddings | `sentence-transformers/all-MiniLM-L6-v2`, CPU supported |
+| Embeddings | `Qwen/Qwen3-Embedding-0.6B` via FastEmbed/ONNX, CPU; `jinaai/jina-reranker-v1-turbo-en` rerank |
 | Similarity search | In-memory normalized vectors and cosine similarity |
 | Frontend | React, TypeScript, Vite |
 | Node | 24 LTS |

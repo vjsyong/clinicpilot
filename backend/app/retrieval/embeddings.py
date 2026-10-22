@@ -1,7 +1,8 @@
-"""Local sentence-transformer embeddings with a fingerprint-keyed vector cache.
+"""Local FastEmbed/ONNX embeddings with a fingerprint-keyed vector cache.
 
-The model is loaded lazily so importing the retrieval package never imports
-torch or sentence-transformers. Tests inject a deterministic fake embedder.
+Qwen3-Embedding uses an instruction prefix for queries and a raw document
+input. The model is loaded lazily so importing the retrieval package never
+imports ONNX. Tests inject a deterministic fake embedder.
 """
 
 from __future__ import annotations
@@ -21,6 +22,11 @@ import numpy as np
 from numpy.typing import NDArray
 
 from app.contracts import RetrievedDocument
+from app.retrieval.fastembed_cache import (
+    cache_directory,
+    dereference_model_symlinks,
+    is_external_data_error,
+)
 from app.settings import Settings, get_settings
 
 Vector = NDArray[np.float32]
@@ -53,48 +59,83 @@ def _validated(vectors: Any, expected_rows: int) -> Vector:
     return _normalize(array)
 
 
-class LocalEmbedder:
-    """Lazy sentence-transformers wrapper pinned to a model revision."""
+class FastEmbedder:
+    """Lazy FastEmbed wrapper for Qwen3-Embedding (ONNX, CPU)."""
 
-    def __init__(self, model_name: str, revision: str) -> None:
+    def __init__(
+        self,
+        model_name: str,
+        revision: str,
+        *,
+        threads: int = 8,
+        query_prefix: str = "",
+    ) -> None:
         self.model_name = model_name
         self.revision = revision
+        self.threads = threads
+        self.query_prefix = query_prefix
         self._model: Any | None = None
+        self._lock = threading.Lock()
 
     def _load(self) -> Any:
         if self._model is None:
-            module = importlib.import_module("sentence_transformers")
-            self._model = module.SentenceTransformer(self.model_name, revision=self.revision)
+            with self._lock:
+                if self._model is None:
+                    module = importlib.import_module("fastembed")
+                    cache_dir = cache_directory()
+                    try:
+                        self._model = module.TextEmbedding(
+                            model_name=self.model_name,
+                            cache_dir=str(cache_dir),
+                            threads=self.threads,
+                        )
+                    except Exception as exc:
+                        if not is_external_data_error(exc):
+                            raise
+                        dereference_model_symlinks(cache_dir)
+                        self._model = module.TextEmbedding(
+                            model_name=self.model_name,
+                            cache_dir=str(cache_dir),
+                            threads=self.threads,
+                        )
         return self._model
+
+    def _embed(self, texts: Sequence[str]) -> Vector:
+        model = self._load()
+        return np.asarray(list(model.embed(list(texts))), dtype=np.float32)
 
     def embed_texts(self, texts: Sequence[str]) -> Vector:
         if not texts:
             return np.empty((0, 0), dtype=np.float32)
-        model = self._load()
-        encoded = model.encode(
-            list(texts),
-            convert_to_numpy=True,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-        )
-        return _validated(encoded, len(texts))
+        return _validated(self._embed(texts), len(texts))
 
     def embed_query(self, text: str) -> Vector:
-        vector: Vector = self.embed_texts([text])[0]
+        prefixed = f"{self.query_prefix}{text}" if self.query_prefix else text
+        vector: Vector = self.embed_texts([prefixed])[0]
         return vector
 
 
-_DEFAULT_EMBEDDERS: dict[tuple[str, str], LocalEmbedder] = {}
+_DEFAULT_EMBEDDERS: dict[tuple[str, str, int, str], FastEmbedder] = {}
 _DEFAULT_LOCK = threading.Lock()
 
 
-def default_embedder(settings: Settings | None = None) -> LocalEmbedder:
+def default_embedder(settings: Settings | None = None) -> FastEmbedder:
     settings = settings or get_settings()
-    key = (settings.embedding_model, settings.embedding_revision)
+    key = (
+        settings.embedding_model,
+        settings.embedding_revision,
+        settings.embedding_threads,
+        settings.embedding_query_prefix,
+    )
     with _DEFAULT_LOCK:
         embedder = _DEFAULT_EMBEDDERS.get(key)
         if embedder is None:
-            embedder = LocalEmbedder(*key)
+            embedder = FastEmbedder(
+                settings.embedding_model,
+                settings.embedding_revision,
+                threads=settings.embedding_threads,
+                query_prefix=settings.embedding_query_prefix,
+            )
             _DEFAULT_EMBEDDERS[key] = embedder
     return embedder
 

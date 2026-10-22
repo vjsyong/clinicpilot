@@ -38,6 +38,9 @@ async def knowledge_status(
         "records": len(index.documents),
         "model": settings.embedding_model,
         "revision": settings.embedding_revision,
+        "reranker": settings.reranker_model,
+        "reranker_revision": settings.reranker_revision,
+        "reranker_enabled": settings.reranker_enabled,
     }
 
 

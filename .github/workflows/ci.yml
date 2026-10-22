@@ -126,10 +126,6 @@ jobs:
       - name: Audit Python dependencies
         run: |
           set -euo pipefail
-          # The locked CPU wheel is published from the same torch source
-          # release as the PyPI sdist/wheel, but the +cpu local version is not a
-          # PyPI version label. Audit the equivalent upstream version.
-          sed -E -i 's/^torch==([0-9.]+)\+cpu( ;.*)?$/torch==\1\2/' "$RUNNER_TEMP/requirements.txt"
           uv run --project backend pip-audit \
             --requirement "$RUNNER_TEMP/requirements.txt" \
             --no-deps --disable-pip --strict \

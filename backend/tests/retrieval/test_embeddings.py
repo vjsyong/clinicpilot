@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 from app.retrieval.documents import documents_from_csv
 from app.retrieval.embeddings import (
+    FastEmbedder,
     cache_fingerprint,
     cache_path,
     clear_memory_cache,
@@ -79,3 +80,22 @@ def test_embed_documents_recomputes_corrupt_cache(
     assert np.allclose(np.linalg.norm(vectors, axis=1), 1.0)
     with np.load(path, allow_pickle=False) as data:
         assert data["vectors"].shape == vectors.shape
+
+
+def test_query_prefix_is_applied_to_queries_only() -> None:
+    class StubModel:
+        def __init__(self) -> None:
+            self.inputs: list[list[str]] = []
+
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            self.inputs.append(list(texts))
+            return [[1.0, 0.0] for _ in texts]
+
+    embedder = FastEmbedder("stub-model", "stub-revision", query_prefix="PREFIX: ")
+    stub = StubModel()
+    embedder._model = stub
+
+    embedder.embed_query("clinic hours")
+    embedder.embed_texts(["Clinic C001: Metro Care."])
+
+    assert stub.inputs == [["PREFIX: clinic hours"], ["Clinic C001: Metro Care."]]

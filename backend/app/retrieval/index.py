@@ -3,12 +3,15 @@
 Dense cosine similarity remains the semantic channel. A field-weighted BM25
 channel and an exact ID/name channel are fused with reciprocal rank fusion, so
 exact records, paraphrases, and rare terms all have a path into the top results.
-No vector database or external retrieval service is required.
+Fused candidates are reranked with a local cross-encoder; exact matches stay
+ahead of the reranked set. No vector database or external retrieval service is
+required.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import re
 import threading
@@ -25,10 +28,13 @@ from app.retrieval.documents import (
 )
 from app.retrieval.embeddings import (
     Embedder,
-    LocalEmbedder,
+    default_embedder,
     embed_documents,
 )
+from app.retrieval.reranker import Reranker, default_reranker
 from app.settings import Settings
+
+logger = logging.getLogger(__name__)
 
 _FILTER_KEYS = frozenset({"source_file", "category", "specialty", "clinic_id"})
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -79,6 +85,15 @@ _BM25_K1 = 1.5
 _BM25_B = 0.75
 _RRF_K = 60
 _EXACT_BOOST = 0.5
+_RERANK_CANDIDATES = 20
+_RERANK_MAX_CHARS = 1200
+
+
+def _sigmoid(value: float) -> float:
+    if value >= 0:
+        return 1.0 / (1.0 + math.exp(-value))
+    factor = math.exp(value)
+    return factor / (1.0 + factor)
 
 
 def _normalize_text(value: str) -> str:
@@ -131,10 +146,12 @@ class _KnowledgeIndex:
         settings: Settings,
         session_factory: SessionFactory | None,
         embedder: Embedder,
+        reranker: Reranker | None = None,
     ) -> None:
         self._settings = settings
         self._session_factory = session_factory
         self._embedder = embedder
+        self._reranker = reranker
         self._documents: list[RetrievedDocument] = []
         self._vectors: NDArray[np.float32] | None = None
         self._term_frequencies: list[dict[str, float]] = []
@@ -168,6 +185,8 @@ class _KnowledgeIndex:
             vectors = embed_documents(documents, self._embedder, self._settings)
             if vectors.shape[0] != len(documents):
                 raise RuntimeError("Embedding count does not match the document count.")
+            if self._reranker is not None:
+                self._reranker.prewarm()
 
             frequencies = [_weighted_terms(document) for document in documents]
             lengths = [sum(terms.values()) for terms in frequencies]
@@ -275,6 +294,61 @@ class _KnowledgeIndex:
                 scores[index] = score
         return scores
 
+    def _rerank_ranked(
+        self,
+        query: str,
+        ranked: list[int],
+        documents: list[RetrievedDocument],
+        exact: list[int],
+        fused: dict[int, float],
+        channels: dict[int, list[str]],
+    ) -> tuple[list[int], dict[int, float]]:
+        if self._reranker is None or not ranked:
+            return ranked, dict(fused)
+
+        candidates = ranked[:_RERANK_CANDIDATES]
+        exact_set = set(exact)
+        for index in exact:
+            if index not in candidates:
+                candidates.append(index)
+        try:
+            scores = self._reranker.rerank(
+                query,
+                [documents[index].text[:_RERANK_MAX_CHARS] for index in candidates],
+            )
+            if len(scores) != len(candidates):
+                raise RuntimeError(
+                    "The reranker returned an unexpected number of scores: "
+                    f"expected {len(candidates)}, got {len(scores)}."
+                )
+        except Exception as exc:
+            logger.warning(
+                "Knowledge rerank failed (%s); falling back to hybrid ranking.",
+                type(exc).__name__,
+            )
+            return ranked, dict(fused)
+
+        score_by_index = dict(zip(candidates, scores, strict=True))
+        reranked = sorted(candidates, key=lambda index: -score_by_index[index])
+        exact_ranked = [index for index in reranked if index in exact_set]
+        other_ranked = [index for index in reranked if index not in exact_set]
+        remaining = [index for index in ranked if index not in score_by_index]
+        final_order = [*exact_ranked, *other_ranked, *remaining]
+
+        final_scores: dict[int, float] = {}
+        for index in exact_ranked:
+            final_scores[index] = 1.0 + _sigmoid(score_by_index[index])
+        for index in other_ranked:
+            final_scores[index] = _sigmoid(score_by_index[index])
+        tail_floor = min((final_scores[index] for index in other_ranked), default=0.5)
+        for rank, index in enumerate(remaining):
+            final_scores[index] = tail_floor * (len(remaining) - rank) / (len(remaining) + 1)
+
+        for index in candidates:
+            if "rerank" not in channels[index]:
+                channels[index].append("rerank")
+        return final_order, final_scores
+
     def search_evidence(
         self,
         query: str,
@@ -323,10 +397,18 @@ class _KnowledgeIndex:
             fused[index] += _EXACT_BOOST
 
         ranked = sorted(fused, key=lambda index: (-fused[index], index))
+        ranked, final_scores = self._rerank_ranked(
+            query,
+            ranked,
+            documents,
+            exact,
+            fused,
+            channels,
+        )
         return [
             Evidence(
                 document=documents[index],
-                score=float(fused[index]),
+                score=float(final_scores[index]),
                 channels=list(channels[index]),
                 excerpt=_excerpt(documents[index], query),
             )
@@ -361,11 +443,18 @@ def build_knowledge_index(
     settings: Settings,
     session_factory: SessionFactory | None,
     embedder: Embedder | None = None,
+    reranker: Reranker | None = None,
 ) -> KnowledgeIndex:
     """Build the retrieval index.
 
     The database is the production source; CSV documents are used only when no
     session factory is supplied (tests and offline smoke checks).
     """
-    backend = embedder or LocalEmbedder(settings.embedding_model, settings.embedding_revision)
-    return _KnowledgeIndex(settings, session_factory, backend)
+    backend = embedder or default_embedder(settings)
+    if reranker is not None:
+        active_reranker: Reranker | None = reranker
+    elif settings.reranker_enabled:
+        active_reranker = default_reranker(settings)
+    else:
+        active_reranker = None
+    return _KnowledgeIndex(settings, session_factory, backend, active_reranker)

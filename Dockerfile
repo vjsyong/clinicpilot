@@ -27,6 +27,7 @@ ENV UV_COMPILE_BYTECODE=1 \
     PATH=/app/backend/.venv/bin:$PATH \
     HOME=/tmp \
     HF_HOME=/opt/hf \
+    FASTEMBED_CACHE_PATH=/opt/fastembed \
     HF_HUB_DISABLE_TELEMETRY=1
 
 RUN apt-get update \
@@ -40,18 +41,20 @@ COPY backend/pyproject.toml backend/uv.lock backend/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --project backend --frozen --no-dev
 
-# Prewarm the pinned embedding model so readiness never depends on a download.
-# The revision matches app.settings.embedding_revision.
+COPY backend/app backend/app
+
+# Prewarm the pinned FastEmbed models so readiness never depends on a download.
+# The revision strings in app.settings identify the ONNX snapshots cached here.
 RUN /app/backend/.venv/bin/python -c "\
-from sentence_transformers import SentenceTransformer; \
-SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', \
-revision='1110a243fdf4706b3f48f1d95db1a4f5529b4d41')"
+from app.retrieval.embeddings import FastEmbedder; \
+from app.retrieval.reranker import FastEmbedReranker; \
+FastEmbedder('Qwen/Qwen3-Embedding-0.6B', 'af95f2c416ffe9379369ad64f9113e865db6112c', threads=8).embed_texts(['warmup']); \
+FastEmbedReranker('jinaai/jina-reranker-v1-turbo-en', 'b8c14f4e723d9e0aab4732a7b7b93741eeeb77c2', threads=8).prewarm()"
 
 # The runtime is offline for model assets; everything needed was fetched above.
 ENV HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1
 
-COPY backend/app backend/app
 COPY backend/alembic.ini backend/alembic.ini
 COPY backend/migrations backend/migrations
 COPY dkl_ai_interview_data dkl_ai_interview_data
@@ -64,7 +67,7 @@ RUN groupadd --gid 10001 app \
     && useradd --uid 10001 --gid app --no-create-home --home-dir /app \
         --shell /usr/sbin/nologin app \
     && mkdir -p /app/data \
-    && chown -R app:app /app/data /opt/hf
+    && chown -R app:app /app/data /opt/hf /opt/fastembed
 
 COPY --chmod=0755 <<'ENTRYPOINT' /usr/local/bin/clinicpilot-entrypoint
 #!/bin/bash

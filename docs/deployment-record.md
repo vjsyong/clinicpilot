@@ -103,7 +103,7 @@ deploy left the SQLite volume intact and kept B1005.
   was exercised with a valid candidate and a zero-second readiness timeout, not a
   naturally broken application build. It restored the previous digest and kept
   the database volume.
-- **DHCP address.** The VM currently has `192.168.1.241`; the deploy variable uses
-  that address. A durable DHCP reservation or static address was not configured.
+- **LAN address is DHCP.** The VM's LAN address (`192.168.1.241`) may change, but
+  deployment and checks use Tailscale MagicDNS, so this does not affect delivery.
 - **Node deviation.** `cerritos` lacks KVM; the VM runs on `enterprise` with the
   same 2 vCPU / 4 GB / 40 GB shape. See the VM section above.

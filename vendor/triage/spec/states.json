@@ -1,0 +1,958 @@
+{
+  "version": "0.13.0",
+  "description": "Component contract matrix \u2014 the states each component must ship and its accessibility notes. Enforced by tools/verify.py against core/*.css; rendered on the docs site (/components/catalog). Optional `evidence` per component declares the verification level reached (L1 lint+states; L2 browser test ids; L3 rendered baseline; L4 product) \u2014 see VERIFICATION.md; components without declared L2/L3 are labelled unverified, never implied verified.",
+  "lifecycle": {
+    "stable": {
+      "requires": [
+        "selector coverage in core/*.css (enforced by tools/verify.py)",
+        "behavioural regression coverage for the interactive states (tests/browser/run.py)",
+        "documented a11y notes covering keyboard + assistive technology"
+      ],
+      "evidence": "Behavioural regression coverage exists \u2014 a real browser exercises the shipped interaction (focus, keyboard, contrast), not merely the presence of a selector."
+    },
+    "beta": {
+      "requires": [
+        "selector coverage in core/*.css",
+        "documented a11y notes",
+        "at least an example-page usage"
+      ],
+      "evidence": "Shipped and dogfooded, but no dedicated behavioural regression test yet; the public API may still change between minor versions."
+    },
+    "experimental": {
+      "requires": [
+        "documented intent and a11y notes",
+        "selector or example-page presence"
+      ],
+      "evidence": "Exploratory: no stability guarantee, no regression coverage; must not be depended on by products yet."
+    },
+    "deprecated": {
+      "requires": [
+        "a stated replacement (or an explicit no-replacement note)",
+        "a migration note in CHANGELOG.md"
+      ],
+      "evidence": "Superseded; retained for compatibility and scheduled for removal on a dated release."
+    }
+  },
+  "components": [
+    {
+      "class": "btn",
+      "name": "Button",
+      "source": "base.css",
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled",
+        "busy (guardApply)"
+      ],
+      "verify": [
+        ".btn",
+        ".btn:hover",
+        ".btn:active",
+        ".btn:disabled",
+        ".btn:focus-visible"
+      ],
+      "evidence": {
+        "L1": "lint+states",
+        "L2": [
+          "browser:roles",
+          "browser:baseline"
+        ]
+      },
+      "a11y": [
+        "Use a real <button> or <a>; never a clickable div.",
+        "Icon-only buttons need aria-label.",
+        "guardApply freezes and relabels the submit button until navigation."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "iconbtn",
+      "name": "Icon button",
+      "source": "base.css",
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible"
+      ],
+      "verify": [
+        ".iconbtn",
+        ".iconbtn:hover",
+        ".iconbtn:active",
+        ".iconbtn:focus-visible"
+      ],
+      "evidence": {
+        "L1": "lint+states",
+        "L2": [
+          "browser:roles"
+        ]
+      },
+      "a11y": [
+        "aria-label is mandatory (the glyph is aria-hidden).",
+        "Minimum 44px on coarse pointers."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "px-sw",
+      "name": "Switch",
+      "source": "base.css",
+      "states": [
+        "checked",
+        "unchecked",
+        "disabled",
+        "focus-visible"
+      ],
+      "verify": [
+        ".px-sw",
+        ".px-sw input:checked",
+        ".px-sw input:disabled",
+        ".px-sw input:focus-visible"
+      ],
+      "evidence": {
+        "L1": "lint+states"
+      },
+      "a11y": [
+        "The visible label wraps a real checkbox; hidden twin carries the off value.",
+        "aria-label carries the verb: Enable/Disable <object>.",
+        "Coarse pointers get a 44px hit area.",
+        "Disabled state dims the track and blocks interaction."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "menu-item",
+      "name": "Menu item",
+      "source": "base.css",
+      "states": [
+        "default",
+        "hover",
+        "danger",
+        "armed",
+        "focus-visible"
+      ],
+      "verify": [
+        ".menu-item",
+        ".menu-item:hover",
+        ".menu-item.danger",
+        ".arm-del.armed",
+        ".menu-item:focus-visible"
+      ],
+      "evidence": {
+        "L1": "lint+states",
+        "L2": [
+          "browser:baseline"
+        ]
+      },
+      "a11y": [
+        "Destructive items use .arm-del with data-arm-label naming the object.",
+        "Escape and outside click disarm; details close disarms."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "nav-item",
+      "name": "Nav item",
+      "source": "base.css",
+      "states": [
+        "default",
+        "hover",
+        "active(selected)",
+        "focus-visible"
+      ],
+      "verify": [
+        ".nav-item",
+        ".nav-item:hover",
+        ".nav-item.active",
+        ".nav-item:focus-visible"
+      ],
+      "evidence": {
+        "L1": "lint+states"
+      },
+      "a11y": [
+        "aria-current=\"page\" on the active item.",
+        "Active rail is border-inline-start (mirrors in RTL)."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "chip",
+      "name": "Chip",
+      "source": "base.css",
+      "states": [
+        "default",
+        "hover",
+        "active(selected)",
+        "focus-visible"
+      ],
+      "verify": [
+        ".chip",
+        ".chip:hover",
+        ".chip.active",
+        ".chip:focus-visible"
+      ],
+      "evidence": {
+        "L1": "lint+states",
+        "L2": [
+          "browser:roles",
+          "browser:baseline"
+        ]
+      },
+      "a11y": [
+        "Counts live in .n; the whole chip is the target (not just the label)."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "index-row",
+      "name": "Index row",
+      "source": "patterns.css",
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible"
+      ],
+      "verify": [
+        ".index-row",
+        ".index-row:hover",
+        ".index-row:active",
+        ".index-row:focus-visible"
+      ],
+      "evidence": {
+        "L1": "lint+states"
+      },
+      "a11y": [
+        "54px minimum height; one row = one destination."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "tbl",
+      "name": "Table",
+      "source": "base.css",
+      "states": [
+        "default",
+        "row hover",
+        "selected",
+        "reflowed (mcards)"
+      ],
+      "verify": [
+        ".tbl",
+        ".tbl tr:hover",
+        ".tbl tr.selected",
+        ".tbl.mcards",
+        ".tbl-records"
+      ],
+      "evidence": {
+        "L1": "lint+states",
+        "L2": [
+          "browser:tokens",
+          "browser:screens"
+        ]
+      },
+      "a11y": [
+        "th scope where the header is meaningful; row checkbox needs aria-label.",
+        "Hover-revealed row actions must also be reachable by keyboard focus."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "bulkbar",
+      "name": "Bulk bar",
+      "source": "base.css",
+      "states": [
+        "hidden",
+        "shown with selection"
+      ],
+      "verify": [
+        ".bulkbar",
+        ".bulkbar.on"
+      ],
+      "evidence": {
+        "L1": "lint+states"
+      },
+      "a11y": [
+        "role=region with aria-label; count is text, not colour."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "savebar",
+      "name": "Save bar",
+      "source": "base.css",
+      "states": [
+        "sticky",
+        "keyboard-lifted (JS transform)"
+      ],
+      "verify": [
+        ".savebar"
+      ],
+      "evidence": {
+        "L1": "lint+states"
+      },
+      "a11y": [
+        "Lifts above the mobile keyboard via keyboard-fit.js (transform), not a class toggle.",
+        "One primary action per card."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "msg",
+      "name": "Flash message",
+      "source": "base.css",
+      "states": [
+        "ok",
+        "warn",
+        "err"
+      ],
+      "verify": [
+        ".msg",
+        ".msg.ok",
+        ".msg.warn",
+        ".msg.err"
+      ],
+      "evidence": {
+        "L1": "lint+states"
+      },
+      "a11y": [
+        "role=status (or role=alert for errors) on the rendered banner.",
+        "Colour is always paired with text."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "toast2",
+      "name": "Toast",
+      "source": "base.css",
+      "states": [
+        "ok",
+        "warn",
+        "err",
+        "auto-dismiss"
+      ],
+      "verify": [
+        ".toast2",
+        ".toast2.ok",
+        ".toast2.warn",
+        ".toast2.err"
+      ],
+      "evidence": {
+        "L1": "lint+states"
+      },
+      "a11y": [
+        "#toasts is aria-live=polite; one toast at a time."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "badge",
+      "name": "Badge",
+      "source": "base.css",
+      "states": [
+        "neutral",
+        "ok",
+        "warn",
+        "err",
+        "acc",
+        "solid"
+      ],
+      "verify": [
+        ".badge",
+        ".badge.ok",
+        ".badge.warn",
+        ".badge.err",
+        ".badge.acc",
+        ".badge.solid"
+      ],
+      "evidence": {
+        "L1": "lint+states",
+        "L2": [
+          "browser:badges",
+          "browser:baseline"
+        ]
+      },
+      "a11y": [
+        "Uppercase micro-label; never the only signal \u2014 pair with text that says the same thing."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "empty",
+      "name": "Empty state",
+      "source": "base.css",
+      "states": [
+        "default"
+      ],
+      "verify": [
+        ".empty",
+        ".empty h4"
+      ],
+      "evidence": {
+        "L1": "lint+states"
+      },
+      "a11y": [
+        "h4 + one-line reason + at most one action; never a bare blank area."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "dlg",
+      "name": "Dialog (native)",
+      "source": "base.css",
+      "states": [
+        "open (showModal)",
+        "backdrop",
+        "wide variant"
+      ],
+      "verify": [
+        ".dlg",
+        ".dlg::backdrop",
+        ".dlg.dlg-wide",
+        ".dlg-h",
+        ".dlg-b",
+        ".dlg-f"
+      ],
+      "evidence": {
+        "L1": "lint+states",
+        "L2": [
+          "browser:interaction"
+        ]
+      },
+      "a11y": [
+        "Native <dialog> + showModal(): top layer, inert background, Escape, focus restore \u2014 do not hand-roll a focus trap.",
+        "aria-labelledby points at the heading; autofocus the first meaningful control, not the close button.",
+        "Backdrop click closes unless the dialog is destructive.",
+        "Backdrop close is suppressed for [data-dlg-static] / [data-danger] dialogs."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "tip",
+      "name": "Tooltip",
+      "source": "base.css",
+      "states": [
+        "hover",
+        "focus-visible"
+      ],
+      "verify": [
+        ".tip",
+        ".tip:hover",
+        ".tip:focus-visible::after",
+        ".tip::after"
+      ],
+      "evidence": {
+        "L1": "lint+states"
+      },
+      "a11y": [
+        "Decorative tips only; essential text must be in the DOM. Pair with aria-describedby for screen readers."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "spinner",
+      "name": "Spinner",
+      "source": "base.css",
+      "states": [
+        "spinning",
+        "reduced-motion (slowed)"
+      ],
+      "verify": [
+        ".spinner",
+        "@keyframes tri-spin"
+      ],
+      "evidence": {
+        "L1": "lint+states"
+      },
+      "a11y": [
+        "Indeterminate progress: keep the action label honest ('Queued\u2026'), and slow to 1s under prefers-reduced-motion."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "field-err",
+      "name": "Field error",
+      "source": "base.css",
+      "states": [
+        "message",
+        "aria-invalid input"
+      ],
+      "verify": [
+        ".field-err",
+        "input[aria-invalid=\"true\"]"
+      ],
+      "evidence": {
+        "L1": "lint+states"
+      },
+      "a11y": [
+        "Focusable summary at the top + inline message per field, linked with aria-describedby; aria-invalid=true on the control (W3C ARIA21)."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "tabs",
+      "name": "Tabs",
+      "source": "base.css",
+      "states": [
+        "selected",
+        "hover",
+        "focus-visible",
+        "overflow-scroll"
+      ],
+      "verify": [
+        ".tab",
+        ".tablist",
+        ".tab[aria-selected=\"true\"]",
+        ".tab:focus-visible"
+      ],
+      "evidence": {
+        "L1": "lint+states"
+      },
+      "a11y": [
+        "tablist/tab/tabpanel roles wired by components.js with roving tabindex and Arrow/Home/End.",
+        "Panels are hidden, not unmounted; one tab is always selected."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "crumbs",
+      "name": "Breadcrumbs",
+      "source": "base.css",
+      "states": [
+        "default",
+        "current"
+      ],
+      "verify": [
+        ".crumbs",
+        ".crumbs [aria-current=\"page\"]"
+      ],
+      "evidence": {
+        "L1": "lint+states"
+      },
+      "a11y": [
+        "nav[aria-label=Breadcrumb] wraps an ordered list; plain text + separators.",
+        "aria-current on the leaf; the last item is not a link."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "radio",
+      "name": "Radio",
+      "source": "base.css",
+      "states": [
+        "checked",
+        "unchecked",
+        "focus-visible",
+        "disabled"
+      ],
+      "verify": [
+        ".radio",
+        ".radio input:checked",
+        ".radio input:focus-visible"
+      ],
+      "evidence": {
+        "L1": "lint+states"
+      },
+      "a11y": [
+        "Native input inside the label; group with fieldset/radiogroup and a shared name."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "slider",
+      "name": "Slider",
+      "source": "base.css",
+      "states": [
+        "default",
+        "focus-visible",
+        "disabled"
+      ],
+      "verify": [
+        ".slider",
+        ".slider:focus-visible::-webkit-slider-thumb"
+      ],
+      "evidence": {
+        "L1": "lint+states"
+      },
+      "a11y": [
+        "aria-label on the range; the readout mirrors the value; keyboard steps come from the native input."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "cb",
+      "name": "Combobox",
+      "source": "base.css",
+      "states": [
+        "closed",
+        "open",
+        "filtered",
+        "selected",
+        "multi-chips"
+      ],
+      "verify": [
+        ".cb",
+        ".cb.open .cb-list",
+        ".cb-opt[aria-selected=\"true\"]",
+        ".cb-chips"
+      ],
+      "evidence": {
+        "L1": "lint+states"
+      },
+      "a11y": [
+        "aria-activedescendant listbox: focus stays in the input; options are filtered in place.",
+        "Multi-select mirrors values into a hidden input and announces chips via aria-live."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "dp",
+      "name": "Date picker",
+      "source": "base.css",
+      "states": [
+        "open",
+        "today",
+        "selected",
+        "out-of-month",
+        "disabled-day",
+        "roving-focus (one tabbable cell)"
+      ],
+      "verify": [
+        ".dp",
+        ".dp.open .dp-pop",
+        ".dp-d.sel",
+        ".dp-d[aria-current=\"date\"]"
+      ],
+      "evidence": {
+        "L1": "lint+states",
+        "L2": [
+          "browser:interaction"
+        ]
+      },
+      "a11y": [
+        "ISO value on the input; month/weekday names and full-date day labels via Intl (locale-aware).",
+        "Roving tabindex: exactly one day cell is tabbable \u2014 the selected day in view, else today, else the first enabled day.",
+        "Arrow keys move \u00b11/\u00b17 days, Home/End to week start/end, PageUp/PageDown change month; disabled days are skipped.",
+        "Escape from anywhere inside the popup closes it and returns focus to the input; selecting a day does the same.",
+        "min/max disable days; today carries aria-current=date.",
+        "Clicking the input reopens the picker after a selection (the input is already focused, so no focus event fires)."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "acc",
+      "name": "Accordion",
+      "source": "base.css",
+      "states": [
+        "closed",
+        "open",
+        "focus-visible"
+      ],
+      "verify": [
+        ".acc",
+        ".acc-h",
+        "details.acc[open]>.acc-h::after"
+      ],
+      "evidence": {
+        "L1": "lint+states"
+      },
+      "a11y": [
+        "Native details/summary \u2014 keyboard and find-in-page work for free; group with the details name attribute for exclusivity."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "avatar-sq",
+      "name": "Avatar",
+      "source": "base.css",
+      "states": [
+        "initials",
+        "image",
+        "ink",
+        "group"
+      ],
+      "verify": [
+        ".avatar-sq",
+        ".avatar-32",
+        ".avatar-group",
+        ".avatar-more"
+      ],
+      "evidence": {
+        "L1": "lint+states"
+      },
+      "a11y": [
+        "Decorative avatars are aria-hidden; meaningful ones need alt/label. Groups carry an aria-label with the count."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "img",
+      "name": "Image",
+      "source": "base.css",
+      "states": [
+        "16:9",
+        "4:3",
+        "1:1",
+        "contain",
+        "caption"
+      ],
+      "verify": [
+        ".img",
+        ".img-16x9",
+        ".img img",
+        ".img-cap"
+      ],
+      "evidence": {
+        "L1": "lint+states"
+      },
+      "a11y": [
+        "alt is mandatory (TDS014); the frame reserves space so loading never shifts layout."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "drop",
+      "name": "Upload / dropzone",
+      "source": "base.css",
+      "states": [
+        "idle",
+        "dragover",
+        "focus-visible",
+        "file-list"
+      ],
+      "verify": [
+        ".drop",
+        ".drop.over",
+        ".up-row",
+        ".up-rm"
+      ],
+      "evidence": {
+        "L1": "lint+states"
+      },
+      "a11y": [
+        "role=button + Enter/Space; announces files with name and size; removal is a labelled button."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "notif",
+      "name": "Notifications",
+      "source": "base.css",
+      "states": [
+        "unread",
+        "read",
+        "empty",
+        "mark-all"
+      ],
+      "verify": [
+        ".notif-dot",
+        ".notif-item.unread",
+        ".notif-panel",
+        ".notif-foot"
+      ],
+      "evidence": {
+        "L1": "lint+states"
+      },
+      "a11y": [
+        "The summary's accessible name carries the unread count; unread uses background + a dot, never colour alone."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "cmd",
+      "name": "Command palette",
+      "source": "base.css",
+      "states": [
+        "closed",
+        "open",
+        "filtered",
+        "active-item",
+        "empty"
+      ],
+      "verify": [
+        ".dlg.cmd",
+        ".cmd-item[aria-selected=\"true\"]",
+        ".cmd-hint",
+        ".cmd-empty"
+      ],
+      "evidence": {
+        "L1": "lint+states",
+        "L2": [
+          "browser:interaction"
+        ]
+      },
+      "a11y": [
+        "Native dialog; Arrow/Enter/Escape inside, cmd/ctrl+K opens; items are buttons with listbox roles.",
+        "A click executes the clicked item (both data-href and data-cmd-action paths); Enter executes the highlighted item."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "page-state",
+      "name": "Full-page state",
+      "source": "base.css",
+      "states": [
+        "404",
+        "500",
+        "403",
+        "offline",
+        "maintenance"
+      ],
+      "verify": [
+        ".page-state",
+        ".ps-icon",
+        ".ps-code",
+        ".ps-actions",
+        ".ps-meta"
+      ],
+      "evidence": {
+        "L1": "lint+states"
+      },
+      "a11y": [
+        "One h2 per page state; the code is secondary; actions are the only focusable elements."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "pager-num",
+      "name": "Numbered pagination",
+      "source": "base.css",
+      "states": [
+        "first",
+        "middle",
+        "current",
+        "gap",
+        "disabled"
+      ],
+      "verify": [
+        ".pager-num",
+        ".pgn[aria-current=\"page\"]",
+        ".pgn-gap",
+        ".pager-size"
+      ],
+      "evidence": {
+        "L1": "lint+states"
+      },
+      "a11y": [
+        "aria-current marks the active page; range labels on prev/next; page-size select is labelled."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "tl",
+      "name": "Timeline",
+      "source": "base.css",
+      "states": [
+        "default",
+        "status-dots"
+      ],
+      "verify": [
+        ".tl",
+        ".tl-item",
+        ".tl-dot.ok",
+        ".tl-dot.err"
+      ],
+      "evidence": {
+        "L1": "lint+states"
+      },
+      "a11y": [
+        "Ordered list; dots are decorative (the text carries the meaning)."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "diff",
+      "name": "Diff",
+      "source": "base.css",
+      "states": [
+        "context",
+        "added",
+        "removed",
+        "empty"
+      ],
+      "verify": [
+        ".diff",
+        ".diff-row",
+        ".diff-add",
+        ".diff-del",
+        ".diff-empty"
+      ],
+      "evidence": {
+        "L1": "lint+states"
+      },
+      "a11y": [
+        "role=table with labelled columns; +/- expressed as background tints plus repeated line numbers."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "sheet-end",
+      "name": "Sheet dialog",
+      "source": "base.css",
+      "states": [
+        "side",
+        "bottom"
+      ],
+      "verify": [
+        ".dlg.sheet-end",
+        ".dlg.sheet-bottom"
+      ],
+      "evidence": {
+        "L1": "lint+states"
+      },
+      "a11y": [
+        "Same native-dialog contract as .dlg (top layer, Escape, focus restore); data-dlg-static still blocks backdrop close."
+      ],
+      "status": "stable"
+    },
+    {
+      "class": "prov",
+      "name": "Provenance record",
+      "source": "base.css",
+      "states": [
+        "default",
+        "explanation folded/expanded (<details>)"
+      ],
+      "verify": [
+        ".prov",
+        ".prov-k",
+        ".prov-v",
+        ".prov details"
+      ],
+      "evidence": {
+        "L1": "lint+states"
+      },
+      "a11y": [
+        "The eight required fields stay visible without expanding the transcript.",
+        "Label-value pairs reuse the .kv grid; the record is addressable by a stable id so reviews and exports can cite it.",
+        "The explanation is supplementary, folds below the record and is never rendered inline as evidence."
+      ],
+      "status": "beta"
+    },
+    {
+      "class": "select",
+      "name": "Select (native)",
+      "source": "base.css",
+      "states": [
+        "default",
+        "focus",
+        "disabled"
+      ],
+      "verify": [
+        ".select",
+        ".select:focus"
+      ],
+      "evidence": {
+        "L1": "lint+states"
+      },
+      "a11y": [
+        "Native single-select for small fixed option sets; the .select class is for explicit citation and is styled identically to the bare element.",
+        "Always labelled; the change announces the new value by name in the flow's confirmation.",
+        "Invalid selects carry aria-invalid and pair with .field-err copy. Large or filtered sets use component/cb instead."
+      ],
+      "status": "beta"
+    }
+  ]
+}

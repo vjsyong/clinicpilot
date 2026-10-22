@@ -1,0 +1,12 @@
+{
+  "description": "ClinicPilot consumes a pinned copy of the Triage Design System under vendor/triage. Generated and vendored files are not scanned; application UI sources are.",
+  "ignore": [
+    "vendor/**",
+    "implementation_plans/**",
+    "dkl_ai_interview_data/**",
+    "playwright-report/**",
+    "test-results/**",
+    "blob-report/**"
+  ],
+  "checkUnknownClasses": false
+}

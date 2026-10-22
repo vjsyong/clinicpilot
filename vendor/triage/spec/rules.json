@@ -1,0 +1,202 @@
+{
+  "$schema": "./rules.schema.json",
+  "name": "Triage Design System \u2014 enforceable rule catalogue",
+  "version": "0.13.0",
+  "description": "Normative rules checked by triage-lint (lint/). Each ID is stable and citable; agents and CI must treat severities as the default contract, overridable per project in .triagerc.json.",
+  "rules": [
+    {
+      "id": "TDS001",
+      "name": "deprecated-name",
+      "severity": "error",
+      "applies_to": [
+        "css",
+        "html",
+        "js"
+      ],
+      "summary": "Uses a pre-Triage (mail-triage era) class, id or global instead of the renamed vocabulary.",
+      "why": "The 0.1.0 rename sweep defined the public vocabulary; old names are no longer styled by core.css and silently fall back to browser defaults.",
+      "fix": "Rename via /RENAME-MAP.md (or run: python3 tools/assemble_from_pack.py --apply-map <files>)."
+    },
+    {
+      "id": "TDS002",
+      "name": "raw-colour",
+      "severity": "warning",
+      "applies_to": [
+        "css",
+        "html",
+        "js"
+      ],
+      "summary": "A colour literal appears where a token exists (palette match = error) or that is not in the palette (off-system colour = warning).",
+      "why": "Colour is tokenised in tokens/tokens.json; literals fork the theme and bypass the semantic alias tier.",
+      "fix": "Use var(--token) (prefer semantic aliases: --surface-*, --text-*, --status-*) or add the colour to tokens.json."
+    },
+    {
+      "id": "TDS003",
+      "name": "non-zero-radius",
+      "severity": "error",
+      "applies_to": [
+        "css",
+        "html",
+        "js"
+      ],
+      "summary": "A non-zero border-radius (CSS property or JS style key).",
+      "why": "Zero radius is a design-system token (misc.radius = 0px), enforced globally by *{border-radius:0 !important}.",
+      "fix": "Remove the radius, or fork the system deliberately by changing the token and deleting the global rule."
+    },
+    {
+      "id": "TDS004",
+      "name": "focus-removed",
+      "severity": "error",
+      "applies_to": [
+        "css",
+        "html"
+      ],
+      "summary": "outline:none / outline:0 without a visible focus replacement in the same rule.",
+      "why": "The global :focus-visible ring is accessibility-critical (WCAG 2.4.7/1.4.11); removing it without replacement fails the system's a11y gate.",
+      "fix": "Keep the global ring, or provide :focus-visible with a 2px+ ring or a compensating box-shadow/border change."
+    },
+    {
+      "id": "TDS005",
+      "name": "off-scale-spacing",
+      "severity": "warning",
+      "applies_to": [
+        "css",
+        "html"
+      ],
+      "summary": "Margin/padding/gap/inset px values outside the normalised spacing scale.",
+      "why": "Triage ships a 2/4px-grid spacing scale (tokens.json spacing group); ad-hoc values are the measured drift the system exists to stop.",
+      "fix": "Snap to the nearest scale value or extend the scale in tokens.json deliberately."
+    },
+    {
+      "id": "TDS006",
+      "name": "off-token-motion",
+      "severity": "info",
+      "applies_to": [
+        "css"
+      ],
+      "summary": "Transition/animation duration not in the motion token set.",
+      "why": "Durations are tokens (motion.duration); ad-hoc values break the motion feel and the Material-3-derived ranges.",
+      "fix": "Use a motion duration token value (100/120/150/180/200/240/250/280/400ms)."
+    },
+    {
+      "id": "TDS007",
+      "name": "off-ladder-zindex",
+      "severity": "info",
+      "applies_to": [
+        "css",
+        "html",
+        "js"
+      ],
+      "summary": "z-index outside the documented ladder.",
+      "why": "The z-index ladder (bulkbar 6 \u2026 toasts 300) is a contract; anything full-screen must clear 180 or the mobile tab bar punches through.",
+      "fix": "Use a ladder value or extend misc.zindex in tokens.json."
+    },
+    {
+      "id": "TDS008",
+      "name": "off-system-font",
+      "severity": "error",
+      "applies_to": [
+        "css"
+      ],
+      "summary": "font-family declaration not using Geist / Geist Mono (or inherit).",
+      "why": "Typography is part of the system identity and the variable-font loading strategy.",
+      "fix": "Use the system stacks (or var(--mono)), or change the token in tokens.json for a deliberate rebrand."
+    },
+    {
+      "id": "TDS009",
+      "name": "token-override",
+      "severity": "error",
+      "applies_to": [
+        "css"
+      ],
+      "summary": "A project stylesheet redefines a Triage custom property (--bg, --acc, --surface-* \u2026).",
+      "why": "Tokens are the source of truth; local overrides fork the theme invisibly and break contrast guarantees.",
+      "fix": "Edit tokens/tokens.json and regenerate, or use a distinct non-system variable name for local values."
+    },
+    {
+      "id": "TDS010",
+      "name": "unknown-class",
+      "severity": "info",
+      "applies_to": [
+        "html",
+        "js"
+      ],
+      "summary": "A class used in markup that core.css / patterns.css do not define (opt-in, may be a project class).",
+      "why": "Design elements should come from the system catalogue; unknown classes are how bespoke one-offs creep in.",
+      "fix": "Use a system class, or allowlist the project class in .triagerc.json."
+    },
+    {
+      "id": "TDS011",
+      "name": "contrast",
+      "severity": "error",
+      "applies_to": [
+        "css"
+      ],
+      "summary": "A defined token pair fails WCAG contrast (4.5:1 text / 3:1 non-text).",
+      "why": "The token set is the contrast contract; theme overrides can silently break it.",
+      "fix": "Adjust the token value(s) so the pair meets the threshold, or extend .triagerc.json contrastPairs for intentional exceptions."
+    },
+    {
+      "id": "TDS012",
+      "name": "primitive-use",
+      "severity": "warning",
+      "applies_to": [
+        "css",
+        "html",
+        "js"
+      ],
+      "summary": "A product stylesheet consumes a primitive token directly where a semantic alias exists.",
+      "why": "The alias tier is what makes retheming possible without touching components; primitive use forks the theme.",
+      "fix": "Use the alias (e.g. var(--surface-card) instead of var(--card)). Definitions inside tokens.css are exempt."
+    },
+    {
+      "id": "TDS013",
+      "name": "physical-direction",
+      "severity": "warning",
+      "applies_to": [
+        "css",
+        "html"
+      ],
+      "summary": "Physical direction property (margin-left, left:, text-align:left \u2026) instead of logical properties.",
+      "why": "The system supports RTL via logical properties; physical properties double the stylesheet and break direction switching.",
+      "fix": "Use margin-inline-start/end, padding-inline-*, border-inline-*, inset-inline-*, text-align:start/end."
+    },
+    {
+      "id": "TDS014",
+      "name": "image-alt",
+      "severity": "error",
+      "applies_to": [
+        "html"
+      ],
+      "summary": "<img> without an alt attribute.",
+      "why": "Alt text is the accessibility contract for images; decorative images still need alt=\"\".",
+      "fix": "Add alt with a description, or alt=\"\" when the image is decorative."
+    },
+    {
+      "id": "TDS015",
+      "name": "accessible-name",
+      "severity": "error",
+      "applies_to": [
+        "html"
+      ],
+      "summary": "Interactive element with no accessible name (empty button/link, no aria-label), or a positive tabindex.",
+      "why": "Icon-only controls without labels are unusable with assistive tech; positive tabindex breaks natural order (WCAG 2.4.3).",
+      "fix": "Add text or aria-label; never use tabindex > 0."
+    },
+    {
+      "id": "TDS016",
+      "name": "label-tier",
+      "severity": "info",
+      "applies_to": [
+        "css"
+      ],
+      "summary": "Label-role class (.badge, .nav-label, .cmd-group) set below the comfortable label target (13px at the 16px root).",
+      "why": "Supporting labels target 13-14px at comfortable density and 12px is reserved for tertiary metadata (timestamps in dense tables, keyboard hints, provenance footnotes). The floor stays an error; this tier check is adoption guidance, not a failure.",
+      "fix": "Use the system token (--fs-badge / --fs-nav-label) or set the label role to 13px+ (0.8125rem+)."
+    }
+  ],
+  "score": {
+    "formula": "score = max(0, 100 - (errors*8 + warnings*2 + infos*0.5))",
+    "gate": "CI fails on any error; --max-warnings can tighten warnings."
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "clinicpilot-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Browser acceptance tests for the packaged ClinicPilot container",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test:e2e": "playwright test",
+    "test:e2e:functional": "playwright test --grep-invert \"booking persists across an application restart\"",
+    "test:e2e:persistence": "playwright test --grep \"booking persists across an application restart\"",
+    "typecheck:e2e": "tsc --noEmit --target es2022 --module commonjs --moduleResolution node --esModuleInterop --skipLibCheck tests/e2e/workbench.spec.ts playwright.config.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.53.2",
+    "@types/node": "22.15.3",
+    "typescript": "5.8.3"
+  }
+}

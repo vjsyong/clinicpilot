@@ -1,0 +1,46 @@
+# Never send secrets, VCS data, local environments, test output, or docs to the
+# Docker builder. frontend/dist is built inside the image; vendor/ is required
+# by the frontend build and must stay in the context.
+
+.git
+.github
+.gitignore
+.env
+.env.*
+!.env.example
+
+data
+backend/data
+backend/.venv
+.venv
+**/__pycache__
+**/*.pyc
+**/*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+
+node_modules
+**/node_modules
+frontend/dist
+playwright-report
+blob-report
+test-results
+.e2e-state
+
+implementation_plans
+docs
+tests
+backend/tests
+backend/evals
+
+*.log
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+.DS_Store

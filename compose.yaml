@@ -1,0 +1,64 @@
+# Production topology: the application has no published ports; the Cloudflare
+# tunnel is the only ingress. The tunnel profile is opt-in so an app-only host
+# can start without a tunnel token:
+#
+#   docker compose --profile tunnel up -d --build
+#
+# Every credential and the secret URL prefix are runtime configuration. Nothing
+# in this file may contain a real value.
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${CLINICPILOT_IMAGE:-clinicpilot:local}
+    init: true
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      APP_ENV: production
+      DATABASE_URL: sqlite:////app/data/clinicpilot.db
+      INTERNAL_API_BASE_URL: http://127.0.0.1:8000${DEMO_PATH_PREFIX:-/demo/}
+    volumes:
+      - data:/app/data
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 15s
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3).read()
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
+    networks:
+      - clinicpilot
+
+  cloudflared:
+    image: cloudflare/cloudflared:2024.12.2
+    profiles: ["tunnel"]
+    command: ["tunnel", "--no-autoupdate", "run", "--url", "http://app:8000"]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - clinicpilot
+
+networks:
+  clinicpilot:
+
+volumes:
+  # Project-scoped on purpose: separate worktrees/CI projects must never share
+  # the production database volume.
+  data:

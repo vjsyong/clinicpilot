@@ -1,0 +1,420 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  UV_VERSION: "0.11.4"
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "24"
+  CI_PREFIX: "/ci-clinicpilot-0123456789/"
+  CI_PASSWORD: "clinicpilot-ci-password"
+
+jobs:
+  backend:
+    name: backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Install locked backend dependencies
+        run: uv sync --project backend --locked --group dev
+
+      - name: Ruff lint
+        run: uv run --project backend ruff check backend
+
+      - name: Ruff format check
+        run: uv run --project backend ruff format --check backend
+
+      - name: Mypy
+        run: uv run --project backend mypy backend/app
+
+      - name: Pytest
+        run: uv run --project backend pytest backend/tests -q
+
+  frontend:
+    name: frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Type check
+        working-directory: frontend
+        run: npm run typecheck
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+      - name: Triage design-system strict lint
+        run: |
+          set -euo pipefail
+          if [[ ! -f vendor/triage/lint/triage_lint.py ]]; then
+            echo "::error::vendored Triage lint tooling is missing; do not replace it with a machine-specific path"
+            exit 1
+          fi
+          python3 vendor/triage/lint/triage_lint.py . --strict
+
+  security:
+    name: security
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Install locked backend dependencies
+        run: uv sync --project backend --locked --group dev
+
+      - name: Export runtime lock for audit
+        run: |
+          set -euo pipefail
+          uv export --project backend --locked --no-dev \
+            --format requirements-txt --no-hashes \
+            --output-file "$RUNNER_TEMP/requirements.txt"
+
+      - name: Audit Python dependencies
+        run: |
+          set -euo pipefail
+          # The locked CPU wheel is published from the same torch source
+          # release as the PyPI sdist/wheel, but the +cpu local version is not a
+          # PyPI version label. Audit the equivalent upstream version.
+          sed -E -i 's/^torch==([0-9.]+)\+cpu( ;.*)?$/torch==\1\2/' "$RUNNER_TEMP/requirements.txt"
+          uv run --project backend pip-audit \
+            --requirement "$RUNNER_TEMP/requirements.txt" \
+            --no-deps --disable-pip --strict \
+            --progress-spinner off
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Audit npm dependencies
+        working-directory: frontend
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm audit --audit-level=high
+
+      - name: Install pinned Gitleaks
+        env:
+          GITLEAKS_VERSION: "8.24.3"
+        run: |
+          set -euo pipefail
+          dest="$RUNNER_TEMP/gitleaks"
+          mkdir -p "$dest"
+          case "$(uname -m)" in
+            x86_64) arch=x64 ;;
+            aarch64 | arm64) arch=arm64 ;;
+            *) echo "::error::unsupported architecture: $(uname -m)"; exit 1 ;;
+          esac
+          archive="$RUNNER_TEMP/gitleaks_${GITLEAKS_VERSION}_linux_${arch}.tar.gz"
+          curl -fsSL --retry 3 --retry-delay 2 \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_${arch}.tar.gz" \
+            -o "$archive"
+          tar -xzf "$archive" -C "$dest" gitleaks
+          rm -f "$archive"
+          "$dest/gitleaks" version
+
+      - name: Scan history for secrets (redacted)
+        run: |
+          "$RUNNER_TEMP/gitleaks/gitleaks" detect --source . --redact --verbose --no-banner
+
+  container:
+    name: container
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      COMPOSE_PROJECT: ci-clinicpilot-${{ github.run_id }}-${{ github.run_attempt }}
+      IMAGE_TAG: clinicpilot:${{ github.sha }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build production image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          tags: clinicpilot:${{ github.sha }}
+          load: true
+          cache-from: type=gha,scope=clinicpilot-image
+          cache-to: type=gha,mode=max,scope=clinicpilot-image
+
+      - name: Validate Compose configuration
+        run: |
+          set -euo pipefail
+          docker compose -p "$COMPOSE_PROJECT" -f compose.yaml -f compose.ci.yaml config --quiet
+          CLOUDFLARE_TUNNEL_TOKEN=ci-not-used \
+            docker compose --profile tunnel -f compose.yaml config --quiet
+
+      - name: Start application and model stub
+        run: |
+          docker compose -p "$COMPOSE_PROJECT" -f compose.yaml -f compose.ci.yaml \
+            up -d --wait --wait-timeout 240 app model-stub
+
+      - name: Wait for readiness
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 90); do
+            if curl -fsS http://127.0.0.1:8000/readyz >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose -p "$COMPOSE_PROJECT" -f compose.yaml -f compose.ci.yaml logs app
+          echo "::error::application did not become ready"
+          exit 1
+
+      - name: Non-mutating deployment smoke
+        run: python3 scripts/smoke_test.py --base-url http://127.0.0.1:8000 --prefix "$CI_PREFIX"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install Playwright test dependencies
+        run: |
+          set -euo pipefail
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Browser and API acceptance suite
+        env:
+          CLINICPILOT_E2E_PREFIX: ${{ env.CI_PREFIX }}
+          CLINICPILOT_E2E_PASSWORD: ${{ env.CI_PASSWORD }}
+          E2E_STATE_FILE: ${{ runner.temp }}/clinicpilot-e2e/persisted-booking.json
+        run: npm run test:e2e:functional
+
+      - name: Restart application container
+        run: |
+          set -euo pipefail
+          docker compose -p "$COMPOSE_PROJECT" -f compose.yaml -f compose.ci.yaml restart app
+          for _ in $(seq 1 90); do
+            if curl -fsS http://127.0.0.1:8000/readyz >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::application did not become ready after restart"
+          exit 1
+
+      - name: Verify persistence evidence was captured
+        env:
+          E2E_STATE_FILE: ${{ runner.temp }}/clinicpilot-e2e/persisted-booking.json
+        run: test -s "$E2E_STATE_FILE"
+
+      - name: Restart persistence acceptance
+        env:
+          CLINICPILOT_E2E_PREFIX: ${{ env.CI_PREFIX }}
+          CLINICPILOT_E2E_PASSWORD: ${{ env.CI_PASSWORD }}
+          E2E_STATE_FILE: ${{ runner.temp }}/clinicpilot-e2e/persisted-booking.json
+        run: npm run test:e2e:persistence
+
+      - name: Save the tested image for publication
+        run: |
+          set -euo pipefail
+          docker save "$IMAGE_TAG" | gzip -1 > "$RUNNER_TEMP/clinicpilot-image.tar.gz"
+          ls -lh "$RUNNER_TEMP/clinicpilot-image.tar.gz"
+
+      - name: Upload tested image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clinicpilot-image
+          path: ${{ runner.temp }}/clinicpilot-image.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Collect redacted diagnostics
+        if: always()
+        env:
+          E2E_STATE_FILE: ${{ runner.temp }}/clinicpilot-e2e/persisted-booking.json
+        run: |
+          set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/artifacts"
+          compose=(docker compose -p "$COMPOSE_PROJECT" -f compose.yaml -f compose.ci.yaml)
+          "${compose[@]}" ps > "$RUNNER_TEMP/artifacts/compose-ps.txt" 2>&1 || true
+          "${compose[@]}" logs --no-color > "$RUNNER_TEMP/artifacts/compose.log" 2>&1 || true
+          sed -E -i \
+            -e 's/(DEEPSEEK_API_KEY|INTERNAL_TOOL_KEY|DEMO_PASSWORD_HASH|CLOUDFLARE_TUNNEL_TOKEN|TUNNEL_TOKEN|Cookie|Set-Cookie)([:=][[:space:]]*)[^[:space:]]+/\1\2[REDACTED]/Ig' \
+            "$RUNNER_TEMP/artifacts/compose.log" || true
+          if [[ -d playwright-report ]]; then cp -R playwright-report "$RUNNER_TEMP/artifacts/"; fi
+          if [[ -d test-results ]]; then cp -R test-results "$RUNNER_TEMP/artifacts/"; fi
+          if [[ -f "$E2E_STATE_FILE" ]]; then cp "$E2E_STATE_FILE" "$RUNNER_TEMP/artifacts/"; fi
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: container-diagnostics
+          path: ${{ runner.temp }}/artifacts
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Remove CI project and volumes
+        if: always()
+        run: |
+          docker compose -p "$COMPOSE_PROJECT" -f compose.yaml -f compose.ci.yaml \
+            down -v --remove-orphans || true
+
+  quality:
+    name: quality
+    if: always()
+    needs: [backend, frontend, security, container]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Aggregate required jobs
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          needs = json.loads(os.environ["NEEDS"])
+          required = ["backend", "frontend", "security", "container"]
+          failures = []
+          for job in required:
+              result = needs.get(job, {}).get("result")
+              if result != "success":
+                  failures.append(f"{job}={result}")
+
+          if failures:
+              print("::error::Required checks did not pass: " + ", ".join(failures))
+              sys.exit(1)
+          print("All required checks passed.")
+          PY
+
+  publish:
+    name: publish
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.quality.result == 'success'
+    needs: [quality]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download the tested image
+        uses: actions/download-artifact@v4
+        with:
+          name: clinicpilot-image
+          path: ${{ runner.temp }}/image
+
+      - name: Load the tested image
+        run: docker load -i "$RUNNER_TEMP/image/clinicpilot-image.tar.gz"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag, push and record the digest
+        run: |
+          set -euo pipefail
+          ref="ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}"
+          docker tag "clinicpilot:${GITHUB_SHA}" "$ref"
+          push_output="$(docker push "$ref")"
+          printf '%s\n' "$push_output"
+          digest_hash="$(printf '%s\n' "$push_output" \
+            | sed -n 's/.*digest: \(sha256:[0-9a-f]\{64\}\).*/\1/p' \
+            | tail -n 1)"
+          if [[ -n "$digest_hash" ]]; then
+            digest="${ref}@${digest_hash}"
+          else
+            digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$ref" 2>/dev/null || true)"
+          fi
+          if [[ -z "$digest" ]]; then
+            echo "::error::published image digest is empty"
+            exit 1
+          fi
+          {
+            echo "digest=$digest"
+            echo "source_revision=$GITHUB_SHA"
+          } | tee "$RUNNER_TEMP/image-digest.txt"
+          {
+            echo "### Published image"
+            echo
+            echo '```'
+            echo "$digest"
+            echo '```'
+            echo
+            echo "Source revision: \`${GITHUB_SHA}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload image digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: clinicpilot-image-digest
+          path: ${{ runner.temp }}/image-digest.txt
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,25 @@
+# Local development override.
+#
+#   docker compose -f compose.yaml -f compose.local.yaml up --build
+#
+# Only the application is published, and only on loopback. The base file marks
+# cloudflared with the opt-in "tunnel" profile, and this override pins it to
+# zero replicas, so a local `up` can never start the connector.
+
+services:
+  cloudflared:
+    # Hard-off locally even if someone passes --profile tunnel.
+    deploy:
+      replicas: 0
+
+  app:
+    environment:
+      APP_ENV: development
+      DEMO_PATH_PREFIX: /demo/
+      DEMO_PASSWORD_HASH: ""
+      INTERNAL_API_BASE_URL: http://127.0.0.1:8000/demo/
+    ports:
+      - "127.0.0.1:8000:8000"
+    restart: "no"
+    healthcheck:
+      start_period: 30s

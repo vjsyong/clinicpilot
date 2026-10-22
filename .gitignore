@@ -1,0 +1,44 @@
+# Runtime data and secrets
+.env
+.env.*
+!.env.example
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+backend/data/
+backend/.venv/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+playwright-report/
+test-results/
+blob-report/
+
+# Models and caches
+.cache/
+hf-cache/
+
+# Tooling artifacts
+.codegraph/
+.DS_Store
+*.log
+/tmp/

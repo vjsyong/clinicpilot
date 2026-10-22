@@ -1,0 +1,12 @@
+@media (min-width: 768px) {
+  #chat-panel .chat-flex {
+    height: calc(100vh - 370px);
+    min-height: 220px;
+  }
+}
+
+@media (max-width: 1023px) {
+  #workbench-side {
+    display: none;
+  }
+}

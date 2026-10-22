@@ -1,0 +1,220 @@
+{
+  "cases": [
+    {
+      "id": "clinic-hours",
+      "description": "Grounded operating hours and cancellation policy with clinic source.",
+      "turns": [
+        {
+          "message": "What are the opening hours and cancellation policy for Metro Care Health Clinic?",
+          "expect": {
+            "assistant_contains_any": [
+              "8:00",
+              "8 AM",
+              "8AM",
+              "8 a.m.",
+              "8 am"
+            ],
+            "assistant_contains": [
+              "24 hours"
+            ],
+            "sources_include": [
+              {
+                "source_file": "clinics.csv",
+                "record_id": "C001"
+              }
+            ],
+            "booking_created": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "cancellation-policy",
+      "description": "The second clinic's distinct cancellation policy is not conflated.",
+      "turns": [
+        {
+          "message": "What is the cancellation policy at Sunset Wellness Center?",
+          "expect": {
+            "assistant_contains": [
+              "12 hours"
+            ],
+            "sources_include": [
+              {
+                "source_file": "clinics.csv",
+                "record_id": "C002"
+              }
+            ],
+            "booking_created": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "knee-routing",
+      "description": "A paraphrased knee complaint routes to orthopedics.",
+      "turns": [
+        {
+          "message": "My knee hurts when I climb stairs. Which doctor and treatment should I see?",
+          "expect": {
+            "assistant_contains_any": [
+              "Dr. James Wilson",
+              "Orthopedics"
+            ],
+            "sources_include": [
+              {
+                "source_file": "doctors.csv",
+                "record_id": "D104"
+              },
+              {
+                "source_file": "treatments.csv",
+                "record_id": "T005"
+              }
+            ],
+            "booking_created": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "fee-vs-price",
+      "description": "Consultation fee and treatment price stay separate; no invented total.",
+      "turns": [
+        {
+          "message": "What would a knee consultation with Dr. James Wilson cost, including the treatment price?",
+          "expect": {
+            "assistant_contains": [
+              "$250",
+              "$230"
+            ],
+            "assistant_not_contains": [
+              "$480",
+              "480.00"
+            ],
+            "source_files": [
+              "doctors.csv",
+              "treatments.csv"
+            ],
+            "booking_created": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "allergy-honesty",
+      "description": "No allergist is invented; general practice is offered instead.",
+      "turns": [
+        {
+          "message": "I think I may be allergic to penicillin. Can I book an allergist?",
+          "expect": {
+            "assistant_contains_any": [
+              "no allergist",
+              "do not have an allergist",
+              "not have an allergist",
+              "general practice",
+              "Dr. Sarah Jenkins"
+            ],
+            "assistant_not_contains": [
+              "we have an allergist",
+              "book you with an allergist"
+            ],
+            "booking_created": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "multi-turn-booking",
+      "description": "Collect a complete draft, show the canonical summary, then confirm once.",
+      "turns": [
+        {
+          "message": "I'd like a general health checkup with Dr. Sarah Jenkins at Metro Care Health Clinic on {{date_plus_days:21}} at 10:00.",
+          "expect": {
+            "assistant_contains": [
+              "Booking summary:"
+            ],
+            "draft_status": "awaiting_confirmation",
+            "booking_created": false
+          }
+        },
+        {
+          "message": "yes please",
+          "expect": {
+            "booking_created": true,
+            "booking": {
+              "doctor_id": "D101",
+              "treatment_id": "T001",
+              "local_date": "{{date_plus_days:21}}",
+              "local_time": "10:00"
+            },
+            "draft_status": "booked"
+          }
+        }
+      ]
+    },
+    {
+      "id": "correction-then-confirm",
+      "description": "A correction is not a confirmation; the corrected summary must be confirmed.",
+      "turns": [
+        {
+          "message": "Book a general health checkup with Dr. Sarah Jenkins at Metro Care Health Clinic on {{date_plus_days:21}} at 11:00.",
+          "expect": {
+            "assistant_contains": [
+              "Booking summary:"
+            ],
+            "draft_status": "awaiting_confirmation",
+            "booking_created": false
+          }
+        },
+        {
+          "message": "Yes, but please change the date to {{date_plus_days:28}}.",
+          "expect": {
+            "assistant_contains_any": [
+              "{{date_plus_days:28}}"
+            ],
+            "draft_status": "awaiting_confirmation",
+            "draft_version_at_least": 2,
+            "booking_created": false
+          }
+        },
+        {
+          "message": "confirm",
+          "expect": {
+            "booking_created": true,
+            "booking": {
+              "doctor_id": "D101",
+              "local_date": "{{date_plus_days:28}}",
+              "local_time": "11:00"
+            },
+            "draft_status": "booked"
+          }
+        }
+      ]
+    },
+    {
+      "id": "policy-interruption",
+      "description": "A policy question with an active draft answers from sources, keeps the draft, and does not write a booking.",
+      "turns": [
+        {
+          "message": "Book a general health checkup with Dr. Sarah Jenkins at Metro Care Health Clinic on {{date_plus_days:35}} at 14:00.",
+          "expect": {
+            "assistant_contains": [
+              "Booking summary:"
+            ],
+            "draft_status": "awaiting_confirmation",
+            "booking_created": false
+          }
+        },
+        {
+          "message": "What is the cancellation policy for Metro Care Health Clinic?",
+          "expect": {
+            "assistant_contains": [
+              "24 hours"
+            ],
+            "draft_status": "awaiting_confirmation",
+            "booking_created": false
+          }
+        }
+      ]
+    }
+  ]
+}

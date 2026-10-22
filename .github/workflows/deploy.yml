@@ -1,0 +1,215 @@
+name: Deploy production
+
+# Promotion only: deploy the exact image that the successful CI run tested and
+# published. This workflow never builds an image and never checks out or runs an
+# untrusted pull request.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+  packages: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}:${{ github.event.workflow_run.head_sha }}
+
+jobs:
+  deploy:
+    name: deploy tested image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    if: >-
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Verify candidate identity
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::invalid candidate sha"; exit 1; }
+          echo "candidate=$SHA" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check out the tested revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 1
+
+      - name: Download the published image digest from the tested CI run
+        uses: actions/download-artifact@v4
+        with:
+          name: clinicpilot-image-digest
+          path: ${{ runner.temp }}/image-digest
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Parse the published digest
+        id: digest
+        run: |
+          set -euo pipefail
+          file="$RUNNER_TEMP/image-digest/image-digest.txt"
+          test -s "$file"
+          digest="$(sed -n 's/^digest=.*@\(sha256:[0-9a-f]\{64\}\)$/\1/p' "$file" | tail -n 1)"
+          revision="$(sed -n 's/^source_revision=//p' "$file" | tail -n 1)"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$revision" == "${{ github.event.workflow_run.head_sha }}" ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "published=$digest" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Join the deployment tailnet
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:clinicpilot-deploy
+          version: 1.78.1
+
+      - name: Configure verified SSH access
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST_KEY: ${{ secrets.DEPLOY_HOST_KEY }}
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_HOST:?set the production variable DEPLOY_HOST}"
+          : "${DEPLOY_SSH_KEY:?set the production secret DEPLOY_SSH_KEY}"
+          : "${DEPLOY_HOST_KEY:?set the production secret DEPLOY_HOST_KEY}"
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/clinicpilot_deploy"
+          chmod 600 "$HOME/.ssh/clinicpilot_deploy"
+          printf '%s\n' "$DEPLOY_HOST_KEY" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Read the deployed revision and decide
+        id: state
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_USER:=deploy}"
+          : "${DEPLOY_PATH:=/opt/clinicpilot}"
+          ssh_opts=(-i "$HOME/.ssh/clinicpilot_deploy" -o BatchMode=yes
+                    -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes
+                    -o UserKnownHostsFile="$HOME/.ssh/known_hosts")
+          deployed="$(ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "cat '$DEPLOY_PATH/state/deployed-sha' 2>/dev/null || true" | tr -d '[:space:]')"
+          echo "deployed=$deployed" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -z "$deployed" ]]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$deployed" == "$SHA" ]]; then
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "already deployed" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          status="$(gh api "repos/$REPO/compare/$deployed...$SHA" --jq .status)"
+          case "$status" in
+            ahead)
+              echo "deploy=true" >> "$GITHUB_OUTPUT"
+              ;;
+            behind|identical)
+              echo "deploy=false" >> "$GITHUB_OUTPUT"
+              echo "candidate is not newer than the deployed revision ($status)" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo "::error::candidate diverges from the deployed revision; refusing to replace it"
+              exit 1
+              ;;
+          esac
+
+      - name: Install the deployment files on the host
+        if: steps.state.outputs.deploy == 'true'
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_USER:=deploy}"
+          : "${DEPLOY_PATH:=/opt/clinicpilot}"
+          ssh_opts=(-i "$HOME/.ssh/clinicpilot_deploy" -o BatchMode=yes
+                    -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes
+                    -o UserKnownHostsFile="$HOME/.ssh/known_hosts")
+          ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "mkdir -p '$DEPLOY_PATH/scripts'"
+          scp -i "$HOME/.ssh/clinicpilot_deploy" -o BatchMode=yes \
+            -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            compose.yaml "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/compose.yaml"
+          scp -i "$HOME/.ssh/clinicpilot_deploy" -o BatchMode=yes \
+            -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            scripts/deploy.sh "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/scripts/deploy.sh"
+          ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "chmod 0755 '$DEPLOY_PATH/scripts/deploy.sh'"
+
+      - name: Deploy exact image digest
+        if: steps.state.outputs.deploy == 'true'
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          GHCR_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+          EXPECTED_DIGEST: ${{ steps.digest.outputs.digest }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          IMAGE: ${{ env.IMAGE }}
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_USER:=deploy}"
+          : "${DEPLOY_PATH:=/opt/clinicpilot}"
+          ssh_opts=(-i "$HOME/.ssh/clinicpilot_deploy" -o BatchMode=yes
+                    -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes
+                    -o UserKnownHostsFile="$HOME/.ssh/known_hosts")
+          if [[ -n "${GHCR_TOKEN:-}" ]]; then
+            # The token travels over SSH stdin, never in a process argument or log.
+            {
+              printf 'GHCR_TOKEN=%q\n' "$GHCR_TOKEN"
+              printf 'export GHCR_TOKEN\n'
+              printf 'umask 077\n'
+              printf 'GHCR_TOKEN_FILE=/tmp/clinicpilot-ghcr-token.$$\n'
+              printf 'printf "%%s" "$GHCR_TOKEN" > "$GHCR_TOKEN_FILE"\n'
+              printf 'trap "rm -f $GHCR_TOKEN_FILE" EXIT\n'
+              printf 'export GHCR_TOKEN_FILE\n'
+              printf 'export GHCR_USER=%q\n' "${{ github.repository_owner }}"
+              printf 'bash %q --sha %q --image %q --digest %q --deploy-path %q\n' \
+                "$DEPLOY_PATH/scripts/deploy.sh" "$SHA" "$IMAGE" "$EXPECTED_DIGEST" "$DEPLOY_PATH"
+            } | ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "bash -s"
+          else
+            ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" \
+              "cd '$DEPLOY_PATH' && bash scripts/deploy.sh --sha '$SHA' --image '$IMAGE' --digest '$EXPECTED_DIGEST' --deploy-path '$DEPLOY_PATH'"
+          fi
+
+      - name: Record deployment
+        if: steps.state.outputs.deploy == 'true'
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_USER:=deploy}"
+          : "${DEPLOY_PATH:=/opt/clinicpilot}"
+          ssh_opts=(-i "$HOME/.ssh/clinicpilot_deploy" -o BatchMode=yes
+                    -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes
+                    -o UserKnownHostsFile="$HOME/.ssh/known_hosts")
+          ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "printf 'sha='; cat '$DEPLOY_PATH/state/deployed-sha'; printf 'digest='; cat '$DEPLOY_PATH/state/deployed-digest'" \
+            >> "$GITHUB_STEP_SUMMARY"

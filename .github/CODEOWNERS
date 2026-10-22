@@ -1,0 +1,58 @@
+# ClinicPilot path ownership mirrors docs/contracts.md §Ownership.
+# Order matters: the last matching pattern wins.
+
+*                                   @vjsyong
+
+# Shared contracts and runtime wiring (WP0/integrator)
+/AGENTS.md                          @vjsyong
+/CONTRIBUTING.md                    @vjsyong
+/docs/                              @vjsyong
+/backend/app/main.py                @vjsyong
+/backend/app/settings.py            @vjsyong
+/backend/app/contracts.py           @vjsyong
+/backend/app/clock.py               @vjsyong
+
+# Persistence, API and authentication (WP1)
+/backend/app/api/                   @vjsyong
+/backend/app/auth/                  @vjsyong
+/backend/app/db/                    @vjsyong
+/backend/app/services/              @vjsyong
+/backend/migrations/                @vjsyong
+/backend/alembic.ini                @vjsyong
+/backend/tests/api/                 @vjsyong
+/backend/tests/auth/                @vjsyong
+/backend/tests/persistence/         @vjsyong
+
+# Retrieval and agent (WP2)
+/backend/app/agent/                 @vjsyong
+/backend/app/retrieval/             @vjsyong
+/backend/app/config/                @vjsyong
+/backend/tests/agent/               @vjsyong
+/backend/tests/retrieval/           @vjsyong
+/backend/evals/                     @vjsyong
+
+# Frontend and pinned design system (WP3)
+/frontend/                          @vjsyong
+/vendor/triage/                     @vjsyong
+
+# Containers, CI and browser harness (WP4)
+/Dockerfile                         @vjsyong
+/.dockerignore                      @vjsyong
+/compose.yaml                       @vjsyong
+/compose.local.yaml                 @vjsyong
+/compose.ci.yaml                    @vjsyong
+/.github/workflows/ci.yml           @vjsyong
+/.github/CODEOWNERS                 @vjsyong
+/.github/pull_request_template.md   @vjsyong
+/scripts/check.sh                   @vjsyong
+/scripts/smoke_test.py              @vjsyong
+/tests/e2e/                         @vjsyong
+/package.json                       @vjsyong
+/package-lock.json                  @vjsyong
+/playwright.config.ts               @vjsyong
+
+# Deployment automation and documentation (WP7/WP8)
+/.github/workflows/deploy.yml       @vjsyong
+/scripts/deploy.sh                  @vjsyong
+/README.md                          @vjsyong
+/TECH_DOC.md                        @vjsyong

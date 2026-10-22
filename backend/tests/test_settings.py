@@ -4,7 +4,7 @@ import pytest
 from app.settings import Settings
 
 PRODUCTION_PREFIX = "/audit-generated-prefix-0123456789/"
-PRODUCTION_KEY = "0123456789abcdef" * 3
+PRODUCTION_KEY = "a" * 48
 
 
 def _production(**overrides: object) -> Settings:

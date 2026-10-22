@@ -61,7 +61,7 @@ bash scripts/check.sh                                     -> all local gates pas
   self-hosted runner on the private enterprise network and key-only LAN SSH.
   See `docs/deployment-record.md`.
 
-## Audit remediation status (worktree)
+## Audit remediation deployed (2026-10-22)
 
 An independent audit of frozen revision `bfbd438` reproduced eight findings
 (AUD-001–AUD-008): failed-interruption confirmation reuse, lost booking-response
@@ -69,10 +69,10 @@ handling, orphaned in-progress turns, public health routes, unsupported success
 prose, canonical-detail idempotency, production acceptance of the CI stub, and
 mutable action tags.
 
-The remediation branch `fix/implementation-audit-20261022` changes the controller,
-booking service, startup recovery, health routing, production settings, tests,
-and workflows. Local verification passed (141 backend tests, strict Triage lint,
-ruff, mypy, and the audit repros), but the recorded public deployment still runs
-the earlier digest. Do not treat the pre-audit AC5–AC8 rows above as evidence for
-this branch until a trusted CI run and a new deployment pass the revised health
-probes and failure-path tests.
+The fixes were merged and deployed from revision
+`300963ec2ac5fe28d5f84c8c6f21e8986cac59bf` (CI run 39765211059, deploy run
+39765963762, digest
+`sha256:987fd915472eb23082d783cb200993d0e826d3384bbb2713aa3031a4db2c4e97`).
+Local verification passed 141 backend tests, the 9/9 audit regressions, strict
+Triage lint, ruff, and mypy. Live public probes returned login `200`, wrong prefix
+`404`, unauthenticated API `401`, `/healthz` `404`, and `/readyz` `404`.

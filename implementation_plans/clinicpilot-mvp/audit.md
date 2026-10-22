@@ -2,11 +2,12 @@
 
 Date: 2026-10-22. **Original audit outcome: Needs Revision.**
 
-**Remediation status:** all eight findings are fixed on
-`fix/implementation-audit-20261022` with regression coverage. Local validation
-passes, but the fixes are not deployed. Trusted CI and a new exact-image
-deployment with the revised public health probes are still required before the
-production acceptance rows can be treated as closed.
+**Remediation status:** all eight findings are fixed and deployed from revision
+`300963ec2ac5fe28d5f84c8c6f21e8986cac59bf` (CI run 39765211059, deploy run
+39765963762, digest
+`sha256:987fd915472eb23082d783cb200993d0e826d3384bbb2713aa3031a4db2c4e97`).
+Public `/healthz` and `/readyz` now return `404`; login, wrong-prefix, and
+unauthenticated-API probes remain correct.
 
 At the audited revision, the normal booking flow, authentication boundaries,
 persistent storage, CI, and exact-image deployment were substantially

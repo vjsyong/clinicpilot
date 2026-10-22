@@ -74,10 +74,10 @@ private handoff file. They are not in Git or this document.
 | Item | Value |
 | --- | --- |
 | Public repository | https://github.com/vjsyong/clinicpilot |
-| CI run | 39757644785 (backend, frontend, security, container, quality, publish: success) |
-| Deploy run | 39758580196 (success after the tab fix; earlier run 39753860541 fixed docker-group and state ownership) |
-| Deployed SHA | `8d7a19fb6492552b2a80bac71525c1f0a4c39721` |
-| Published/deployed digest | `sha256:8cefd03384c151e8eb14f141b6311108924cc3cdbcabe8b0a839414e5110e0ff` |
+| CI run | 39765211059 (backend, frontend, security, container, quality, publish: success) |
+| Deploy run | 39765963762 (success; promoted the exact tested digest) |
+| Deployed SHA | `300963ec2ac5fe28d5f84c8c6f21e8986cac59bf` |
+| Published/deployed digest | `sha256:987fd915472eb23082d783cb200993d0e826d3384bbb2713aa3031a4db2c4e97` |
 | GHCR package | `ghcr.io/vjsyong/clinicpilot` (public) |
 | Idempotence | A rerun after the successful deploy skipped the deploy steps (`already deployed`). |
 | Runner | `clinicpilot-deploy-enterprise` on the existing `github-actions-runner` VM (100), labels `self-hosted, Linux, X64`; service `actions.runner.vjsyong-clinicpilot.clinicpilot-deploy-enterprise`; the runner is a tailnet member |
@@ -108,11 +108,23 @@ deploy left the SQLite volume intact and kept B1005.
 - **Node deviation.** `cerritos` lacks KVM; the VM runs on `enterprise` with the
   same 2 vCPU / 4 GB / 40 GB shape. See the VM section above.
 
-## Audit follow-up (not yet deployed)
+## Audit remediation deployment (2026-10-22)
 
-A later audit of revision `bfbd438` found that the public hostname returned `200`
-for `/healthz` and `/readyz`. The application now accepts those routes only for
-a loopback `Host`, and `scripts/deploy.sh` requires both public probes to return
-`404`. The recorded deployment above still runs the earlier digest; redeploy and
-re-run the public and private probes before treating this finding as closed in
-production.
+The implementation audit of revision `bfbd438` found eight issues. They were
+fixed, validated, and deployed from revision
+`300963ec2ac5fe28d5f84c8c6f21e8986cac59bf` (digest
+`sha256:987fd915472eb23082d783cb200993d0e826d3384bbb2713aa3031a4db2c4e97`).
+
+- CI run 39765211059 passed all required jobs (backend, frontend, security,
+  container, quality, publish).
+- Deploy run 39765963762 promoted the tested digest to the VM.
+- Public probes: login `200`, wrong prefix `404`, unauthenticated API `401`,
+  `/healthz` `404`, `/readyz` `404`.
+- The VM state files and running container both identify source revision
+  `300963ec2ac5fe28d5f84c8c6f21e8986cac59bf` and the digest above.
+- An initial push failed CI because Gitleaks flagged a deterministic non-secret
+  test constant in history. The constant was replaced and a narrowly scoped
+  `.gitleaksignore` fingerprint was added for the historical commit; the next
+  full-history scan passed.
+- The previous tab-fix deployment remains recorded here as CI run 39757644785 /
+  deploy run 39758580196 at digest `sha256:8cefd033...`.

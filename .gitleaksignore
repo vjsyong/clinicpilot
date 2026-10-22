@@ -1,0 +1,4 @@
+# The test constant below was a deterministic non-secret used only for settings
+# validation. It was replaced in c46dbce; ignore the historical finding so the
+# full-history scan can pass without rewriting main.
+c8aa9a9fee74bfd5082da2f216c41acea8507924:backend/tests/test_settings.py:generic-api-key:7

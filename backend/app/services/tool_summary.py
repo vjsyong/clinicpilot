@@ -20,6 +20,8 @@ def tool_summary(name: str, payload: dict[str, Any]) -> str:
     if isinstance(booking, dict):
         booking_id = str(booking.get("booking_id") or "").strip()
         return f"booking {booking_id}".strip()
+    if name == "get_patient_record":
+        return "patient record"
     if name == "update_booking_draft":
         return "draft updated"
     if name == "abandon_booking_draft":

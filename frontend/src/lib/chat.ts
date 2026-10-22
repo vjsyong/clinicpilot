@@ -39,7 +39,6 @@ export interface AssistantChatMessage {
   createdAt?: string;
   streaming?: boolean;
   statusLabel?: string;
-  reasoning?: string;
   error?: string;
   stopped?: boolean;
 }

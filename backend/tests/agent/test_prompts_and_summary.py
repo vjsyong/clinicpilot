@@ -42,6 +42,9 @@ def test_system_prompt_contains_scope_time_context_and_draft() -> None:
     assert "America/New_York" in prompt
     assert "America/Los_Angeles" in prompt
     assert "Allergies: Penicillin" in prompt
+    assert "get_patient_record" in prompt
+    assert "recorded measurements" in prompt
+    assert "Do not read private patient records" not in prompt
     assert "D101" in prompt
     assert "awaiting_confirmation" in prompt
     assert "no allergist" in prompt

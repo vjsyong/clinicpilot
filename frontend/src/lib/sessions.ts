@@ -51,6 +51,22 @@ export function sessionWhen(value: string, now: Date = new Date()): string {
   return `${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")} ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 }
 
+const TITLE_LIMIT = 64;
+
+export function conversationTitle(text: string): string {
+  const collapsed = text.replace(/\s+/g, " ").trim();
+  if (!collapsed) {
+    return "New conversation";
+  }
+  if (collapsed.length <= TITLE_LIMIT) {
+    return collapsed;
+  }
+  const cut = collapsed.slice(0, TITLE_LIMIT).replace(/[\s,;:-]+$/, "");
+  const lastSpace = cut.lastIndexOf(" ");
+  const base = lastSpace > 0 ? cut.slice(0, lastSpace) : cut;
+  return `${base}...`;
+}
+
 export function filterSessions(
   sessions: ConversationSummary[],
   query: string,

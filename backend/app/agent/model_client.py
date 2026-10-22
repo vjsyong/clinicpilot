@@ -87,7 +87,7 @@ class DeepSeekModelClient:
         tools: Sequence[dict[str, Any]],
         tool_choice: str | dict[str, Any] = "auto",
     ) -> AsyncIterator[dict[str, Any]]:
-        """Yield content, reasoning, and completed tool calls as they arrive.
+        """Yield content and completed tool calls as they arrive.
 
         Streaming is intentionally best-effort: once any text has been emitted
         the turn is not retried, because replaying partial prose would duplicate
@@ -123,9 +123,6 @@ class DeepSeekModelClient:
                         continue
                     choice_delta = chunk.choices[0]
                     delta = choice_delta.delta
-                    reasoning = getattr(delta, "reasoning_content", None)
-                    if reasoning:
-                        yield {"type": "reasoning", "text": reasoning}
                     if delta.content:
                         yield {"type": "content", "text": delta.content}
                     for call in delta.tool_calls or []:

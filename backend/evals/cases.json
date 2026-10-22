@@ -215,6 +215,27 @@
           }
         }
       ]
+    },
+    {
+      "id": "patient-record-measurements",
+      "description": "P001's own visit notes and recorded measurements are readable and not refused.",
+      "turns": [
+        {
+          "message": "What is my last measured blood pressure?",
+          "expect": {
+            "assistant_contains": [
+              "120/80"
+            ],
+            "assistant_not_contains": [
+              "don't have access",
+              "do not have access",
+              "can't read out",
+              "cannot read out"
+            ],
+            "booking_created": false
+          }
+        }
+      ]
     }
   ]
 }

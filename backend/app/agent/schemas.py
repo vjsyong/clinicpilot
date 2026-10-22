@@ -66,6 +66,21 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
+    "get_patient_record": {
+        "name": "get_patient_record",
+        "description": (
+            "Read P001's own profile and treatment history, including allergies, "
+            "prescriptions, past visits, visit notes, and recorded measurements such "
+            "as blood pressure. Use this for questions about the patient's own medical "
+            "record. Never accepts a patient ID."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        },
+    },
     "get_patient_bookings": {
         "name": "get_patient_bookings",
         "description": (
@@ -214,6 +229,7 @@ def validate_tool_arguments(name: str, arguments: str | Mapping[str, Any]) -> di
 
     parsed = _decode_arguments(arguments)
     if name in {
+        "get_patient_record",
         "get_patient_bookings",
         "abandon_booking_draft",
         "create_booking",

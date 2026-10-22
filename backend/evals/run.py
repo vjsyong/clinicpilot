@@ -81,7 +81,11 @@ async def _run_live(api_key: str) -> dict[str, Any]:
     from app.db.seed import seed_all
     from app.db.session import create_session_factory
     from app.retrieval.index import build_knowledge_index
-    from app.retrieval.patient_context import load_patient_context
+    from app.retrieval.patient_context import (
+        load_patient_context,
+        load_patient_record,
+        patient_record_payload,
+    )
     from app.services.conversations import ConversationService
     from app.services.drafts import DraftService
     from app.settings import Settings
@@ -134,6 +138,9 @@ async def _run_live(api_key: str) -> dict[str, Any]:
             def patient_context_loader(_patient_id: str) -> str:
                 return load_patient_context(session_factory)
 
+            def patient_record_loader(_patient_id: str) -> dict[str, Any]:
+                return patient_record_payload(load_patient_record(session_factory))
+
             controller = AgentController(
                 settings=settings,
                 clock=clock,
@@ -143,6 +150,7 @@ async def _run_live(api_key: str) -> dict[str, Any]:
                 conversations=conversations,
                 booking_api=booking_api,
                 patient_context_loader=patient_context_loader,
+                patient_record_loader=patient_record_loader,
             )
 
             case_reports: list[dict[str, Any]] = []

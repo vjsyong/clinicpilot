@@ -385,6 +385,29 @@ async def test_invalid_tool_name_is_rejected_without_execution() -> None:
     assert harness.booking_api.create_calls == []
 
 
+async def test_patient_record_tool_returns_server_owned_context() -> None:
+    context = "Treatment history: Blood pressure normal (120/80)."
+    harness = build_harness(
+        [
+            tool_response(tool_call("get_patient_record", "{}")),
+            text_response("Your last recorded blood pressure was 120/80."),
+        ],
+        patient_context=lambda _patient_id: context,
+    )
+
+    result = await harness.controller.handle_turn(
+        harness.ctx("What is my last measured blood pressure?")
+    )
+
+    assert "120/80" in result.assistant_message
+    tool_messages = [
+        message for message in harness.conversations.messages if message["role"] == "tool"
+    ]
+    assert len(tool_messages) == 1
+    assert "120/80" in tool_messages[0]["content"]
+    assert harness.booking_api.create_calls == []
+
+
 def _assert_paired(messages: list[dict[str, Any]]) -> None:
     call_ids: set[str] = set()
     for message in messages:

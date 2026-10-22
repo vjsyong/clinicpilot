@@ -229,16 +229,10 @@ export function ChatMessageView({
         AI
       </div>
       <div className="bubble ai">
-        {message.streaming && message.statusLabel ? (
-          <p className="status" role="status">
-            {message.statusLabel}
-          </p>
-        ) : null}
-        {message.reasoning ? (
-          <details className="think">
-            <summary>Reasoning</summary>
-            <pre>{message.reasoning}</pre>
-          </details>
+        {message.streaming ? (
+          <span className="think-tag" role="status">
+            {message.statusLabel ?? "Thinking…"}
+          </span>
         ) : null}
         <ToolTrace tools={message.tools} />
         {message.text ? (

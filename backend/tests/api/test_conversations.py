@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from app.auth.sessions import SessionService
 from app.contracts import PATIENT_ID, ChatResponse, SourceRef
-from app.services.conversations import ConversationService
+from app.services.conversations import ConversationService, _title
 from app.services.hashing import chat_request_hash
 from fastapi.testclient import TestClient
 from tests.conftest import ORIGIN, AppHarness
@@ -116,3 +116,17 @@ async def test_conversations_are_session_scoped(harness: AppHarness, login) -> N
 def test_conversations_require_authentication(harness: AppHarness) -> None:
     assert harness.client.get("/demo/api/conversations").status_code == 401
     assert harness.client.get("/demo/api/conversations/unknown").status_code == 401
+
+
+def test_title_uses_first_substantive_turn_and_word_boundary() -> None:
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "Hello."},
+        {"role": "user", "content": "What is my last measured blood pressure?"},
+    ]
+    assert _title(messages) == "What is my last measured blood pressure?"
+
+    long_title = _title([{"role": "user", "content": "word " * 40}])
+    assert long_title.endswith("...")
+    assert len(long_title) <= 67
+    assert "  " not in long_title

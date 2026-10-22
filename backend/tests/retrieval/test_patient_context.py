@@ -18,6 +18,10 @@ def test_patient_context_contains_only_p001(db: DBHarness) -> None:
     assert "Annual routine health checkup" in context
     assert "Healthy / Normal Range" in context
     assert "Multivitamins" in context
+    assert "Blood pressure normal (120/80)" in context
+    assert "1988-05-14" in context
+    assert "john.doe@example.com" in context
+    assert "Dr. Sarah Jenkins" in context
 
     assert "P002" not in context
     assert "P003" not in context

@@ -473,14 +473,52 @@ def _summary(session: Session, conversation: Conversation) -> ConversationSummar
     )
 
 
+_TITLE_LIMIT = 64
+_TRIVIAL_TITLES = frozenset(
+    {
+        "hi",
+        "hello",
+        "hey",
+        "thanks",
+        "thank you",
+        "ok",
+        "okay",
+        "yes",
+        "no",
+        "please",
+        "good morning",
+        "good afternoon",
+        "good evening",
+    }
+)
+
+
 def _title(messages: list[dict[str, Any]]) -> str:
+    """Build a readable title from the first substantive user message."""
+    fallback: str | None = None
     for message in messages:
         if message.get("role") != "user":
             continue
         text = _collapse(str(message.get("content") or ""))
-        if text:
-            return text[:80] + ("..." if len(text) > 80 else "")
-    return "New conversation"
+        if not text:
+            continue
+        if fallback is None:
+            fallback = text
+        if _is_trivial_title(text):
+            continue
+        return _truncate_title(text)
+    return _truncate_title(fallback) if fallback else "New conversation"
+
+
+def _is_trivial_title(text: str) -> bool:
+    return text.strip().lower().rstrip(".!?,") in _TRIVIAL_TITLES
+
+
+def _truncate_title(text: str) -> str:
+    if len(text) <= _TITLE_LIMIT:
+        return text
+    cut = text[:_TITLE_LIMIT].rsplit(" ", 1)[0].rstrip(" ,;:-")
+    return f"{cut}..." if cut else f"{text[:_TITLE_LIMIT]}..."
 
 
 def _collapse(value: str) -> str:

@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import type { ConversationSummary } from "../src/api/types";
-import { filterSessions, groupSessions, sessionWhen } from "../src/lib/sessions";
+import {
+  conversationTitle,
+  filterSessions,
+  groupSessions,
+  sessionWhen,
+} from "../src/lib/sessions";
 
 function session(
   id: string,
@@ -52,6 +57,13 @@ describe("assistant sessions", () => {
 
     expect(filterSessions(sessions, "knee").map((item) => item.id)).toEqual(["1"]);
     expect(filterSessions(sessions, "  ")).toEqual(sessions);
+  });
+
+  it("builds a collapsed title on a word boundary", () => {
+    expect(conversationTitle("  Hello   world  ")).toBe("Hello world");
+    const title = conversationTitle(Array.from({ length: 30 }, () => "word").join(" "));
+    expect(title.endsWith("...")).toBe(true);
+    expect(title.length).toBeLessThanOrEqual(67);
   });
 
   it("formats today as a time and earlier days with a date", () => {

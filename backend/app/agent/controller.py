@@ -170,6 +170,7 @@ class AgentController:
         conversations: ConversationStore,
         booking_api: BookingApi,
         patient_context_loader: Callable[..., Any] | None = None,
+        patient_record_loader: Callable[..., Any] | None = None,
         audit: AuditRecorder | None = None,
     ) -> None:
         self._settings = settings
@@ -180,6 +181,7 @@ class AgentController:
         self._conversations = conversations
         self._booking_api = booking_api
         self._patient_context_loader = patient_context_loader
+        self._patient_record_loader = patient_record_loader
         self._audit = audit
         # ``None`` means this conversation's presented marker was explicitly
         # cleared, which prevents an in-process stale summary from authorizing.
@@ -948,10 +950,6 @@ class AgentController:
                 if text:
                     content.append(text)
                     await _emit(emit, "content", {"delta": text})
-            elif kind == "reasoning":
-                text = str(event.get("text") or "")
-                if text:
-                    await _emit(emit, "reasoning", {"delta": text})
             elif kind == "tool_calls":
                 calls = [
                     call for call in event.get("calls") or [] if isinstance(call, ModelToolCall)
@@ -982,6 +980,8 @@ class AgentController:
 
         if call.name == "search_knowledge":
             return await self._search(arguments, sources)
+        if call.name == "get_patient_record":
+            return await self._get_patient_record()
         if call.name == "get_patient_bookings":
             return await self._list_bookings()
         if call.name == "update_booking_draft":
@@ -1053,6 +1053,39 @@ class AgentController:
                 }
             )
         return _ToolOutcome(ToolResult.ok({"results": results}))
+
+    async def _get_patient_record(self) -> _ToolOutcome:
+        loader = self._patient_record_loader
+        if loader is None:
+            summary = await self._load_patient_context()
+            if not summary or summary == "Patient context is temporarily unavailable.":
+                return _ToolOutcome(
+                    ToolResult.error(
+                        "The patient record is temporarily unavailable.",
+                        code="patient_record_unavailable",
+                    )
+                )
+            return _ToolOutcome(ToolResult.ok({"record": summary}))
+        try:
+            value = loader(PATIENT_ID) if _loader_accepts_argument(loader) else loader()
+            if inspect.isawaitable(value):
+                value = await value
+        except Exception as exc:
+            logger.warning("Patient record loader failed (%s).", type(exc).__name__)
+            return _ToolOutcome(
+                ToolResult.error(
+                    "The patient record is temporarily unavailable.",
+                    code="patient_record_unavailable",
+                )
+            )
+        if value is None:
+            return _ToolOutcome(
+                ToolResult.error(
+                    "The patient record is temporarily unavailable.",
+                    code="patient_record_unavailable",
+                )
+            )
+        return _ToolOutcome(ToolResult.ok({"record": value}))
 
     async def _list_bookings(self) -> _ToolOutcome:
         try:
@@ -1217,7 +1250,11 @@ def build_controller(
     loading a second embedding model.
     """
     from app.retrieval.index import build_knowledge_index
-    from app.retrieval.patient_context import load_patient_context
+    from app.retrieval.patient_context import (
+        load_patient_context,
+        load_patient_record,
+        patient_record_payload,
+    )
     from app.services.audit import AuditService
     from app.services.conversations import ConversationService
     from app.services.drafts import DraftService
@@ -1228,6 +1265,9 @@ def build_controller(
     def patient_context_loader(_patient_id: str) -> Any:
         return load_patient_context(session_factory)
 
+    def patient_record_loader(_patient_id: str) -> Any:
+        return patient_record_payload(load_patient_record(session_factory))
+
     return AgentController(
         settings=settings,
         clock=active_clock,
@@ -1237,6 +1277,7 @@ def build_controller(
         conversations=ConversationService(session_factory, active_clock),
         booking_api=RestBookingApi(settings),
         patient_context_loader=patient_context_loader,
+        patient_record_loader=patient_record_loader,
         audit=AuditService(session_factory, active_clock),
     )
 

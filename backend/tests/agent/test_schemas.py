@@ -14,6 +14,7 @@ from app.agent.schemas import (
 def test_exact_tool_surface() -> None:
     assert set(TOOL_NAMES) == {
         "search_knowledge",
+        "get_patient_record",
         "get_patient_bookings",
         "update_booking_draft",
         "delete_patient_booking",
@@ -21,7 +22,7 @@ def test_exact_tool_surface() -> None:
         "abandon_booking_draft",
         "create_booking",
     }
-    assert len(tool_definitions()) == 7
+    assert len(tool_definitions()) == 8
     for name, schema in TOOL_SCHEMAS.items():
         assert schema["name"] == name
         assert schema["parameters"]["additionalProperties"] is False
@@ -89,7 +90,7 @@ def test_draft_update_validation() -> None:
 
 
 def test_no_argument_tools_reject_extras() -> None:
-    for name in ("get_patient_bookings", "abandon_booking_draft"):
+    for name in ("get_patient_record", "get_patient_bookings", "abandon_booking_draft"):
         assert validate_tool_arguments(name, "") == {}
         with pytest.raises(ToolValidationError):
             validate_tool_arguments(name, '{"patient_id":"P002"}')

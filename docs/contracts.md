@@ -98,7 +98,6 @@ occur:
 
 - `session`: `{conversation_id, turn_id, message_id}` (always first)
 - `status`: `{stage}` (`thinking`, `confirming`, `booking`, `booked`)
-- `reasoning`: `{delta}` when the provider emits reasoning
 - `content`: `{delta}` for streamed assistant text
 - `content_break`: paragraph boundary between tool rounds
 - `tool_start`: `{id, name, args}`
@@ -241,17 +240,21 @@ Tools exposed to the model (narrow schemas, validated names only):
 
 ```text
 search_knowledge(query, filters?)
+get_patient_record()
 get_patient_bookings()
 update_booking_draft(booking_id?, doctor_id?, treatment_id?, local_date?, local_time?, notes?)
 delete_patient_booking(booking_id)
 abandon_booking_draft()
+request_demo_reset()
 create_booking()
 ```
 
 `get_patient_bookings` and `create_booking` perform real HTTP calls to the
 internal booking API using `settings.internal_api_base_url` (which includes the
 runtime prefix and a trailing slash) and `X-Internal-Tool-Key`. The model never supplies patient identity, destination
-URL, credentials, idempotency keys, or success status.
+URL, credentials, idempotency keys, or success status. `get_patient_record`
+renders P001's server-owned profile and treatment history from the database; it
+never accepts a patient parameter and is never added to the shared index.
 
 Confirmation rule (conservative, server-side):
 

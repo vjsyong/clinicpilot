@@ -173,7 +173,6 @@ export interface ChatStreamError {
 export type ChatStreamEvent =
   | { event: "session"; data: ChatStreamSession }
   | { event: "status"; data: { stage: string } }
-  | { event: "reasoning"; data: { delta: string } }
   | { event: "content"; data: { delta: string } }
   | { event: "content_break"; data: Record<string, never> }
   | { event: "tool_start"; data: { id: string; name: string; args: Record<string, unknown> } }

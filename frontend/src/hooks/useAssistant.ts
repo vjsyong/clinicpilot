@@ -21,6 +21,7 @@ import {
   type FailedMessage,
   type PendingMessage,
 } from "../lib/chat";
+import { conversationTitle } from "../lib/sessions";
 
 const STORAGE_KEY = "clinicpilot.conversation";
 
@@ -168,7 +169,7 @@ export function useAssistant({ onBookingCreated }: UseAssistantOptions) {
 
   const upsertSession = useCallback((id: string, turnId: string) => {
     const now = new Date().toISOString();
-    const title = currentTextRef.current.trim().slice(0, 80) || "New conversation";
+    const title = conversationTitle(currentTextRef.current);
     setSessions((current) => {
       const existing = current.find((session) => session.id === id);
       if (existing) {
@@ -238,7 +239,6 @@ export function useAssistant({ onBookingCreated }: UseAssistantOptions) {
           updateAssistant(current, messageId, (message) => ({
             ...message,
             text: message.text + event.data.delta,
-            statusLabel: "Writing…",
           })),
         );
         return;
@@ -248,15 +248,6 @@ export function useAssistant({ onBookingCreated }: UseAssistantOptions) {
           updateAssistant(current, messageId, (message) => ({
             ...message,
             text: message.text ? `${message.text}\n\n` : message.text,
-          })),
-        );
-        return;
-      }
-      if (event.event === "reasoning") {
-        setMessages((current) =>
-          updateAssistant(current, messageId, (message) => ({
-            ...message,
-            reasoning: `${message.reasoning ?? ""}${event.data.delta}`,
           })),
         );
         return;

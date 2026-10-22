@@ -149,22 +149,26 @@ duplicate write.
 
 ## 5. Agent and tools
 
-Six tools are exposed with strict JSON schemas:
+Eight tools are exposed with strict JSON schemas:
 
 ```text
 search_knowledge(query, filters?)
+get_patient_record()
 get_patient_bookings()
 update_booking_draft(booking_id?, doctor_id?, treatment_id?, local_date?, local_time?, notes?)
 delete_patient_booking(booking_id)
 abandon_booking_draft()
+request_demo_reset()
 create_booking()
 ```
 
 `get_patient_bookings` and `create_booking` are real HTTP calls to the
 application's internal booking API with a server-owned key, base URL (including
-the runtime prefix), patient, and idempotency key. They do not open the database.
-`create_booking` takes no model arguments. Outside an authorized confirmation
-turn it is refused.
+the runtime prefix), patient, and idempotency key. `get_patient_record` performs
+the same read-only P001 lookup used for the system prompt, so recorded
+measurements and visit notes are answerable without putting them in the shared
+index. `create_booking` takes no model arguments. Outside an authorized
+confirmation turn it is refused.
 
 The controller bounds the loop (`MAX_TOOL_ROUNDS`, default 6), the context
 (`MAX_HISTORY_MESSAGES`, default 40), the provider timeout, and the retry count.
@@ -217,9 +221,10 @@ reciprocal rank fusion. `search_evidence()` returns the document, score,
 channels, and an excerpt; the controller passes a `[doc:<record_id>]` citation
 to the model. The deterministic retrieval evaluation lives at
 `backend/evals/retrieval.py` (`python backend/evals/retrieval.py`). Patient
-records are never added to the shared knowledge index. P001's profile,
-allergies, and treatment history are injected into the prompt through a separate
-DB read; bookings are read through the REST tool.
+records are never added to the shared knowledge index. P001's profile
+(including date of birth and contact details) and treatment history are injected
+into the prompt through a separate DB read and can be re-read with
+`get_patient_record`; bookings are read through the REST tool.
 
 ## 7. Time handling
 

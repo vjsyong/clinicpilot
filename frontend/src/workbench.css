@@ -155,6 +155,26 @@ button.nav-item {
   margin: var(--space-8) 0 0;
 }
 
+.assistant-page .bubble.ai .think-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+  margin-bottom: var(--space-8);
+  padding: var(--space-3) var(--space-9);
+  border: 1px solid var(--border-default);
+  background: var(--surface-card);
+  color: var(--text-secondary);
+  font-size: var(--fs-pre-log);
+  line-height: 1.2;
+}
+
+.assistant-page .bubble.ai .think-tag::before {
+  content: "";
+  inline-size: 6px;
+  block-size: 6px;
+  background: var(--interactive);
+}
+
 @media (max-width: 767px) {
   .content[data-view="chat"] > .page-head {
     display: none;

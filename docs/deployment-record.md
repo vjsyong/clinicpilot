@@ -128,3 +128,17 @@ fixed, validated, and deployed from revision
   full-history scan passed.
 - The previous tab-fix deployment remains recorded here as CI run 39757644785 /
   deploy run 39758580196 at digest `sha256:8cefd033...`.
+
+## Assistant and retrieval parity deployment (2026-10-22)
+
+Deployed revision `1f2dde0d357dbffc4b2d89c472e0f2a67a8e2c56` (assistant/RAG
+parity) from `main`.
+
+- CI run 39772455537 passed backend, frontend, security, container, quality,
+  and publish.
+- Deploy run 39773302873 succeeded and promoted digest
+  `sha256:cfec3f695b8489ba22462d24fac706cbf0f04cc2705781999c7523e15d97e98a`.
+- The deploy step recorded `deployed sha=1f2dde0...` and the digest above.
+- Public probes: login `200`, wrong prefix `404`, unauthenticated API `401`,
+  `/healthz` `404`, `/readyz` `404`.
+- The SQLite named volume was retained; migrations ran as the release step.

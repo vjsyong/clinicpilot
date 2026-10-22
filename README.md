@@ -196,13 +196,12 @@ successful `main` CI run and does not rebuild the image.
 
 `.github/workflows/deploy.yml` promotes that tested image by digest to the
 dedicated VM. It verifies the workflow event, repository, branch, CI conclusion,
-published digest, and deployed revision before touching the host. Because the
-planned Tailscale OAuth credentials were not available, the deploy job runs on a
-repository-scoped self-hosted runner on the private enterprise network and
-connects to the VM with a key-only SSH credential over the LAN. This is a
-documented deviation from the plan's Tailscale-only path; the runner is scoped to
-this repository and receives the deploy key only in the protected `production`
-environment. `scripts/deploy.sh` runs backward-compatible
+published digest, and deployed revision before touching the host. The deploy job runs on a repository-scoped self-hosted runner that is a member
+of the tailnet and connects to the VM over Tailscale MagicDNS (`DEPLOY_HOST`)
+with a key-only SSH credential. This avoids a public SSH ingress; the runner is
+scoped to this repository and receives the deploy key only in the protected
+`production` environment. The ephemeral GitHub-hosted + Tailscale OAuth join
+from the plan was unavailable, so this is the documented runner deviation. `scripts/deploy.sh` runs backward-compatible
 migrations as a separate step, updates only the application container, checks
 private readiness plus non-mutating public routing/auth probes, and restores the
 previous image if health fails. A rollback never deletes or restores the SQLite
@@ -230,8 +229,8 @@ The full promotion path was exercised on the public repository:
 - Branch protection on `main` requires the aggregate `quality` status.
 
 The image is public on GHCR, so the VM pulls the digest without a registry
-credential. Automatic rollback is implemented in `scripts/deploy.sh` but was not
-forced against a deliberately failing candidate.
+credential. Automatic rollback was exercised with a forced readiness failure: the
+previous digest was restored and the database volume (including B1005) remained.
 
 ## Dataset assumptions
 

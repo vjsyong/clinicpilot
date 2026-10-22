@@ -226,11 +226,12 @@ aggregate `quality` gate. Publication to GHCR happens only after a successful
 with the full commit SHA, and records the digest. Deployment promotes that digest
 through Tailscale-only SSH; it never rebuilds. Rollback restores the previous
 image but deliberately leaves the database volume untouched. The deploy job
-runs on a repository-scoped self-hosted runner on the private enterprise network
-(the planned Tailscale OAuth credentials were unavailable) and uses a key-only
-SSH credential over the LAN to the dedicated VM. `main` requires the aggregate
-`quality` status. Automatic rollback is implemented but was not forced against a
-deliberately failing candidate.
+runs on a repository-scoped self-hosted runner that is a tailnet member and uses
+a key-only SSH credential over Tailscale MagicDNS to the dedicated VM. The
+ephemeral GitHub-hosted + Tailscale OAuth join was unavailable; this is the
+documented runner deviation. `main` requires the aggregate
+`quality` status. Automatic rollback was exercised with a forced readiness
+failure: the previous digest was restored and the database volume remained.
 
 ## 10. Evaluation
 

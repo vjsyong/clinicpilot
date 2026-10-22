@@ -4,10 +4,10 @@ name: Deploy production
 # published. This workflow never builds an image and never checks out or runs an
 # untrusted pull request.
 #
-# Deployment runs on a dedicated self-hosted runner on the private enterprise
-# network because the planned Tailscale OAuth credentials were not available.
-# The runner is scoped to this repository with the clinicpilot-deploy label and
-# reaches the production VM over the LAN with a key-only SSH connection.
+# Deployment runs on a repository-scoped self-hosted runner that is already a
+# member of the tailnet (the planned ephemeral GitHub-hosted + OAuth join was not
+# available). It reaches the production VM over Tailscale MagicDNS with a
+# key-only SSH connection; DEPLOY_HOST is a tailnet hostname.
 on:
   workflow_run:
     workflows: ["CI"]

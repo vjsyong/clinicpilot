@@ -21,7 +21,7 @@ not run.
 | AC11 | pass | Playwright login → draft → summary → `yes` → `booking_created` → table refetch; public browser login → 3 rows → logout. |
 | AC12 | pass | CI run 39753090072 on the public repository: backend, frontend, security, container/browser, aggregate `quality`, and publication all succeeded with no production secrets. |
 | AC13 | pass | CI published the tested image; deploy run 39753860541 promoted digest `sha256:e78f80cc...` (source `f07e942`) and public probes passed. A rerun skipped the already-deployed SHA. |
-| AC14 | not verified | `scripts/deploy.sh` implements image-only rollback and never deletes the volume, but a deliberately failing candidate was not deployed to demonstrate it. |
+| AC14 | pass (forced-failure drill) | `deploy.sh` was run with a valid second image and `CLINICPILOT_HEALTH_TIMEOUT=0`; it detected post-deploy failure, restored digest `sha256:e78f80cc...`, readiness returned `200`, and B1005 remained. The failure was forced at the readiness gate rather than a naturally broken build. |
 | AC15 | pass | README commands rehearsed in a clean disposable copy (no `.git`, `.venv`, `node_modules`, or `data`); migration/seed/frontend build/start/login/wrong-prefix all behaved as documented. |
 
 ## Commands and counts
@@ -56,7 +56,7 @@ bash scripts/check.sh                                     -> all local gates pas
 - CI: run 39753090072 (all required jobs green)
 - Deploy: run 39753860541 (exact digest deployed; rerun skipped)
 - Branch protection: `quality` required on `main`
-- Not demonstrated: forced automatic rollback (AC14)
+- Rollback: forced-failure drill passed (AC14); see `docs/deployment-record.md`
 - Deviation: Tailscale OAuth was unavailable, so deployment uses a scoped
   self-hosted runner on the private enterprise network and key-only LAN SSH.
   See `docs/deployment-record.md`.

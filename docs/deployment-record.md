@@ -80,8 +80,10 @@ private handoff file. They are not in Git or this document.
 | Published/deployed digest | `sha256:e78f80cc14d8b83aeb1937a115b07e9bf9baa1190ad35cd5759c10919648c485` |
 | GHCR package | `ghcr.io/vjsyong/clinicpilot` (public) |
 | Idempotence | A rerun after the successful deploy skipped the deploy steps (`already deployed`). |
-| Runner | `clinicpilot-deploy-enterprise` on the existing `github-actions-runner` VM (100), labels `self-hosted, Linux, X64`; service `actions.runner.vjsyong-clinicpilot.clinicpilot-deploy-enterprise` |
+| Runner | `clinicpilot-deploy-enterprise` on the existing `github-actions-runner` VM (100), labels `self-hosted, Linux, X64`; service `actions.runner.vjsyong-clinicpilot.clinicpilot-deploy-enterprise`; the runner is a tailnet member |
+| Deployment transport | Tailscale MagicDNS `clinicpilot-demo.bigscale-snapper.ts.net` (100.99.97.25) with key-only SSH; `DEPLOY_HOST` is the MagicDNS name |
 | Branch protection | `main` requires the aggregate `quality` status; force pushes/deletions disabled |
+| Rollback drill | Forced post-deploy health failure with `CLINICPILOT_HEALTH_TIMEOUT=0` and a second valid image (`...:rollback-test`, digest `sha256:48621cca...`). `deploy.sh` recreated the application with the previous digest `sha256:e78f80cc...`, readiness returned `200`, and B1005 remained. The drill candidate was valid; the failure was forced at the readiness gate. |
 
 The deploy workflow verifies the CI event, repository, branch, CI conclusion,
 published digest, and deployed revision before touching the host. `scripts/deploy.sh`
@@ -91,15 +93,16 @@ deploy left the SQLite volume intact and kept B1005.
 
 ## Deviation from the plan and remaining gaps
 
-- **Planned Tailscale path not used.** `TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET`
-  and a deployment tailnet tag were unavailable. Instead, the deploy job runs on
-  a repository-scoped self-hosted runner on the private enterprise network and
-  reaches the VM with a key-only SSH credential over the LAN. The runner receives
-  the deploy key only in the protected `production` environment. The VM is not
-  joined to the tailnet.
-- **Automatic rollback not forced.** The rollback branch is implemented and the
-  first automatic deploy had a previous manual image available, but a deliberately
-  failing candidate was not deployed to demonstrate it.
+- **Runner model deviation.** `TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET` for an
+  ephemeral GitHub-hosted runner were unavailable. Instead, the deploy job runs
+  on a repository-scoped self-hosted runner that is already a tailnet member and
+  reaches the VM over Tailscale MagicDNS with key-only SSH. The runner receives
+  the deploy key only in the protected `production` environment. The transport is
+  Tailscale + SSH as planned; only the runner membership model differs.
+- **Automatic rollback evidence is a forced-failure drill.** The rollback branch
+  was exercised with a valid candidate and a zero-second readiness timeout, not a
+  naturally broken application build. It restored the previous digest and kept
+  the database volume.
 - **DHCP address.** The VM currently has `192.168.1.241`; the deploy variable uses
   that address. A durable DHCP reservation or static address was not configured.
 - **Node deviation.** `cerritos` lacks KVM; the VM runs on `enterprise` with the

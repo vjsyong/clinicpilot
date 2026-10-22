@@ -142,3 +142,18 @@ parity) from `main`.
 - Public probes: login `200`, wrong prefix `404`, unauthenticated API `401`,
   `/healthz` `404`, `/readyz` `404`.
 - The SQLite named volume was retained; migrations ran as the release step.
+
+## Booking UX and audit deployment (2026-10-22)
+
+Deployed revision `0ebccaac585275a100a06cdbe1a95e9f9c2709ce` (booking flow,
+actions, reset, and Agent Explorer) from `main`.
+
+- CI run 39789083764 passed backend, frontend, security, container, quality,
+  and publish.
+- Deploy run 39790278290 succeeded and promoted digest
+  `sha256:874e59f7374045baa13ee8593e7b68206e713765b11709e10944231e1e61ce71`.
+- The deploy step recorded `deployed sha=0ebccaa...` and the digest above.
+- Public probes: login `200`, wrong prefix `404`, unauthenticated API `401`,
+  `/healthz` `404`, `/readyz` `404`.
+- Migration `0002_booking_ux` added the booking tombstones/edit marker and the
+  durable `agent_events` trace table; the SQLite named volume was retained.

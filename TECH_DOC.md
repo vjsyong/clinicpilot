@@ -225,7 +225,10 @@ aggregate `quality` gate. Publication to GHCR happens only after a successful
 `main` run, loads the exact image artifact tested by the container job, tags it
 with the full commit SHA, and records the digest. Deployment promotes that digest
 through Tailscale-only SSH; it never rebuilds. Rollback restores the previous
-image but deliberately leaves the database volume untouched.
+image but deliberately leaves the database volume untouched. The deploy job
+runs on a repository-scoped self-hosted runner on the private enterprise network
+(the planned Tailscale OAuth credentials were unavailable) and uses a key-only
+SSH credential over the LAN to the dedicated VM.
 
 ## 10. Evaluation
 

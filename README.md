@@ -192,18 +192,22 @@ restarts the app to prove persistence, saves the exact tested image, and cleans
 up its isolated Compose project. Publication to GHCR happens only for a
 successful `main` CI run and does not rebuild the image.
 
-`.github/workflows/deploy.yml` promotes that tested image by digest through a
-Tailscale-only SSH path to the dedicated VM. It verifies the workflow event,
-repository, branch, CI conclusion, published digest, and deployed revision
-before touching the host. `scripts/deploy.sh` runs backward-compatible
+`.github/workflows/deploy.yml` promotes that tested image by digest to the
+dedicated VM. It verifies the workflow event, repository, branch, CI conclusion,
+published digest, and deployed revision before touching the host. Because the
+planned Tailscale OAuth credentials were not available, the deploy job runs on a
+repository-scoped self-hosted runner on the private enterprise network and
+connects to the VM with a key-only SSH credential over the LAN. This is a
+documented deviation from the plan's Tailscale-only path; the runner is scoped to
+this repository and receives the deploy key only in the protected `production`
+environment. `scripts/deploy.sh` runs backward-compatible
 migrations as a separate step, updates only the application container, checks
 private readiness plus non-mutating public routing/auth probes, and restores the
 previous image if health fails. A rollback never deletes or restores the SQLite
 volume; on the first deployment there is no previous image to restore.
 
-Deployment credentials are environment secrets (`TS_OAUTH_CLIENT_ID`,
-`TS_OAUTH_SECRET`, `DEPLOY_SSH_KEY`, `DEPLOY_HOST_KEY`, optional
-`GHCR_PULL_TOKEN`) and host variables (`DEPLOY_HOST`, `DEPLOY_USER`,
+Deployment credentials are environment secrets (`DEPLOY_SSH_KEY`,
+`DEPLOY_HOST_KEY`) and repository variables (`DEPLOY_HOST`, `DEPLOY_USER`,
 `DEPLOY_PATH`). They are never available to pull-request CI.
 
 ### Deployment status for this build
@@ -214,13 +218,12 @@ out of this repository. Public login, grounded Q&A, the draft â†’ confirmation â
 booking flow, and restart persistence were verified against that deployment.
 See `docs/deployment-record.md` for non-secret operational details.
 
-The planned node was `cerritos`; it has no KVM support, so the recovered VM runs
-on `enterprise` with the same 2 vCPU / 4 GB / 40 GB shape. Automatic GitHub
-deployment was not executed because no GitHub repository/push or Tailscale OAuth
-credentials were authorized in this session. The workflow and rollback script
-are included, and the container/CI checks were exercised locally against the
-same image and Compose files. Remote CI, branch protection, GHCR publication,
-and automatic rollback evidence remain unverified.
+The VM runs on `enterprise` with the planned 2 vCPU / 4 GB / 40 GB shape. CI
+runs on GitHub-hosted runners and publishes the tested image to GHCR; the deploy
+workflow promotes that exact digest through the enterprise-network runner. The
+workflow, publication, and public/routing checks are exercised by the repository.
+Automatic rollback remains bounded by the available previous image and is
+documented in `scripts/deploy.sh`.
 
 ## Dataset assumptions
 

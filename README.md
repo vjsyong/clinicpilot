@@ -221,11 +221,11 @@ deployment. See `docs/deployment-record.md` for non-secret operational details.
 
 The full promotion path was exercised on the public repository:
 
-- CI run `39753090072` passed backend, frontend, security, container/browser,
+- CI run `39757644785` passed backend, frontend, security, container/browser,
   `quality`, and publication.
-- Deploy run `39753860541` promoted the exact published digest
-  `sha256:e78f80cc...`; a rerun correctly skipped because that SHA was already
-  deployed.
+- Deploy run `39758580196` promoted the exact published digest
+  `sha256:8cefd033...` for commit `8d7a19f`; a rerun correctly skipped because
+  that SHA was already deployed.
 - Branch protection on `main` requires the aggregate `quality` status.
 
 The image is public on GHCR, so the VM pulls the digest without a registry

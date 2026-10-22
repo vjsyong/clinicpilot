@@ -74,16 +74,16 @@ private handoff file. They are not in Git or this document.
 | Item | Value |
 | --- | --- |
 | Public repository | https://github.com/vjsyong/clinicpilot |
-| CI run | 39753090072 (backend, frontend, security, container, quality, publish: success) |
-| Deploy run | 39753860541 (success after fixing docker-group and state ownership) |
-| Deployed SHA | `f07e9422819de61ca053d2ca9f6f87a3a745e22b` |
-| Published/deployed digest | `sha256:e78f80cc14d8b83aeb1937a115b07e9bf9baa1190ad35cd5759c10919648c485` |
+| CI run | 39757644785 (backend, frontend, security, container, quality, publish: success) |
+| Deploy run | 39758580196 (success after the tab fix; earlier run 39753860541 fixed docker-group and state ownership) |
+| Deployed SHA | `8d7a19fb6492552b2a80bac71525c1f0a4c39721` |
+| Published/deployed digest | `sha256:8cefd03384c151e8eb14f141b6311108924cc3cdbcabe8b0a839414e5110e0ff` |
 | GHCR package | `ghcr.io/vjsyong/clinicpilot` (public) |
 | Idempotence | A rerun after the successful deploy skipped the deploy steps (`already deployed`). |
 | Runner | `clinicpilot-deploy-enterprise` on the existing `github-actions-runner` VM (100), labels `self-hosted, Linux, X64`; service `actions.runner.vjsyong-clinicpilot.clinicpilot-deploy-enterprise`; the runner is a tailnet member |
 | Deployment transport | Tailscale MagicDNS `clinicpilot-demo.bigscale-snapper.ts.net` (100.99.97.25) with key-only SSH; `DEPLOY_HOST` is the MagicDNS name |
 | Branch protection | `main` requires the aggregate `quality` status; force pushes/deletions disabled |
-| Rollback drill | Forced post-deploy health failure with `CLINICPILOT_HEALTH_TIMEOUT=0` and a second valid image (`...:rollback-test`, digest `sha256:48621cca...`). `deploy.sh` recreated the application with the previous digest `sha256:e78f80cc...`, readiness returned `200`, and B1005 remained. The drill candidate was valid; the failure was forced at the readiness gate. |
+| Rollback drill | Pre-tab-fix drill: forced post-deploy health failure with `CLINICPILOT_HEALTH_TIMEOUT=0` and a second valid image (`...:rollback-test`, digest `sha256:48621cca...`). `deploy.sh` recreated the application with the then-previous digest `sha256:e78f80cc...`, readiness returned `200`, and B1005 remained. The drill candidate was valid; the failure was forced at the readiness gate. |
 
 The deploy workflow verifies the CI event, repository, branch, CI conclusion,
 published digest, and deployed revision before touching the host. `scripts/deploy.sh`

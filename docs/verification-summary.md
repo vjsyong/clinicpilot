@@ -19,8 +19,8 @@ not run.
 | AC9 | pass | P002 rejected with 403 at the chat/booking boundary; model tools have no patient parameter. |
 | AC10 | pass | Backend restart test; container restart E2E; VM application container restart retained B1005. |
 | AC11 | pass | Playwright login → draft → summary → `yes` → `booking_created` → table refetch; public browser login → 3 rows → logout. |
-| AC12 | pass | CI run 39753090072 on the public repository: backend, frontend, security, container/browser, aggregate `quality`, and publication all succeeded with no production secrets. |
-| AC13 | pass | CI published the tested image; deploy run 39753860541 promoted digest `sha256:e78f80cc...` (source `f07e942`) and public probes passed. A rerun skipped the already-deployed SHA. |
+| AC12 | pass | CI run 39757644785 on the public repository: backend, frontend, security, container/browser, aggregate `quality`, and publication all succeeded with no production secrets. |
+| AC13 | pass | CI published the tested image; deploy run 39758580196 promoted digest `sha256:8cefd033...` (source `8d7a19f`) and public probes passed. A rerun skipped the already-deployed SHA. |
 | AC14 | pass (forced-failure drill) | `deploy.sh` was run with a valid second image and `CLINICPILOT_HEALTH_TIMEOUT=0`; it detected post-deploy failure, restored digest `sha256:e78f80cc...`, readiness returned `200`, and B1005 remained. The failure was forced at the readiness gate rather than a naturally broken build. |
 | AC15 | pass | README commands rehearsed in a clean disposable copy (no `.git`, `.venv`, `node_modules`, or `data`); migration/seed/frontend build/start/login/wrong-prefix all behaved as documented. |
 
@@ -53,8 +53,8 @@ bash scripts/check.sh                                     -> all local gates pas
 ## Remote delivery
 
 - Public repository: https://github.com/vjsyong/clinicpilot
-- CI: run 39753090072 (all required jobs green)
-- Deploy: run 39753860541 (exact digest deployed; rerun skipped)
+- CI: run 39757644785 (all required jobs green)
+- Deploy: run 39758580196 (exact digest deployed; rerun skipped)
 - Branch protection: `quality` required on `main`
 - Rollback: forced-failure drill passed (AC14); see `docs/deployment-record.md`
 - Deviation: Tailscale OAuth was unavailable, so deployment uses a scoped

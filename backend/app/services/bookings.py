@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import UTC, date, datetime, time
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -17,6 +17,7 @@ from app.db.models import (
     PatientBooking,
     Treatment,
 )
+from app.services.booking_views import booking_view_from_models
 from app.services.catalog import (
     LocalTimeError,
     doctor_offers,
@@ -31,6 +32,7 @@ from app.services.errors import (
     InvalidBookingDetailsError,
     NotFoundError,
 )
+from app.services.hashing import canonical_booking_hash
 from app.settings import Settings
 
 
@@ -56,7 +58,7 @@ class BookingService:
                 .where(PatientBooking.patient_id == patient_id)
             ).all()
             views = [
-                _booking_view(booking, doctor, treatment, clinic)
+                booking_view_from_models(booking, doctor, treatment, clinic)
                 for booking, doctor, treatment, clinic in rows
             ]
         finally:
@@ -87,7 +89,6 @@ class BookingService:
         draft_id: str,
         draft_version: int,
         idempotency_key: str,
-        request_hash: str,
     ) -> tuple[BookingView, bool]:
         session = self._session_factory()
         try:
@@ -109,15 +110,15 @@ class BookingService:
 
             existing = _booking_by_key(session, idempotency_key)
             if existing is not None:
-                view, _created = self._recover(session, existing, request_hash)
-                self._record_recovery(session, draft, view)
+                view, _created = self._recover(session, existing, draft)
+                self._record_recovery(session, draft, existing, view)
                 return view, False
 
             if draft.booking_id is not None:
                 existing = session.get(PatientBooking, draft.booking_id)
                 if existing is not None:
-                    view, _created = self._recover(session, existing, request_hash)
-                    self._record_recovery(session, draft, view)
+                    view, _created = self._recover(session, existing, draft)
+                    self._record_recovery(session, draft, existing, view)
                     return view, False
 
             if (
@@ -128,10 +129,11 @@ class BookingService:
 
             now = self._clock.now()
             doctor, treatment = _validate_draft(session, draft, now)
+            request_hash = _canonical_hash_for_draft(draft)
 
             booking = self._insert_booking(session, draft, idempotency_key, request_hash, now)
             session.flush()
-            view = _booking_view(
+            view = booking_view_from_models(
                 booking,
                 doctor,
                 treatment,
@@ -145,10 +147,9 @@ class BookingService:
         except IntegrityError as exc:
             session.rollback()
             recovered = _booking_by_key(session, idempotency_key)
-            if recovered is not None:
-                view, _created = self._recover(session, recovered, request_hash)
-                if draft is not None:
-                    self._record_recovery(session, draft, view)
+            if recovered is not None and draft is not None:
+                view, _created = self._recover(session, recovered, draft)
+                self._record_recovery(session, draft, recovered, view)
                 return view, False
             raise InvalidBookingDetailsError(
                 "The booking could not be saved because it conflicts with an existing record."
@@ -189,7 +190,13 @@ class BookingService:
         session.add(booking)
         return booking
 
-    def _record_recovery(self, session: Session, draft: BookingDraft, view: BookingView) -> None:
+    def _record_recovery(
+        self,
+        session: Session,
+        draft: BookingDraft,
+        booking: PatientBooking,
+        view: BookingView,
+    ) -> None:
         changed = False
         if draft.status != DraftStatus.BOOKED.value:
             draft.status = DraftStatus.BOOKED.value
@@ -197,22 +204,26 @@ class BookingService:
         if draft.booking_id != view.booking_id:
             draft.booking_id = view.booking_id
             changed = True
+        canonical_hash = _canonical_hash_for_draft(draft)
+        if booking.request_hash != canonical_hash:
+            booking.request_hash = canonical_hash
+            changed = True
         if changed:
             draft.updated_at = self._clock.now()
             session.commit()
 
     @staticmethod
     def _recover(
-        session: Session, booking: PatientBooking, request_hash: str
+        session: Session, booking: PatientBooking, draft: BookingDraft
     ) -> tuple[BookingView, bool]:
-        if booking.request_hash != request_hash:
+        if not _booking_matches_draft(booking, draft):
             raise IdempotencyConflictError()
         doctor = session.get(Doctor, booking.doctor_id)
         treatment = session.get(Treatment, booking.treatment_id)
         if doctor is None or treatment is None:
             raise InvalidBookingDetailsError("The recorded booking references missing data.")
         clinic = session.get(Clinic, doctor.clinic_id)
-        return _booking_view(booking, doctor, treatment, clinic), False
+        return booking_view_from_models(booking, doctor, treatment, clinic), False
 
 
 def _booking_by_key(session: Session, key: str) -> PatientBooking | None:
@@ -278,27 +289,67 @@ def _next_booking_id(session: Session) -> str:
     return f"B{highest + 1}"
 
 
-def _booking_view(
-    booking: PatientBooking,
-    doctor: Doctor,
-    treatment: Treatment,
-    clinic: Clinic | None,
-) -> BookingView:
-    clinic_id = clinic.clinic_id if clinic is not None else doctor.clinic_id
-    clinic_name = clinic.clinic_name if clinic is not None else ""
-    return BookingView(
-        booking_id=booking.booking_id,
-        patient_id=booking.patient_id,
-        doctor_id=doctor.doctor_id,
-        doctor_name=doctor.full_name,
-        treatment_id=treatment.treatment_id,
-        treatment_name=treatment.treatment_name,
-        clinic_id=clinic_id,
-        clinic_name=clinic_name,
-        local_date=booking.booking_date.isoformat(),
-        local_time=booking.booking_time.strftime("%H:%M"),
-        timezone=booking.timezone,
-        starts_at_utc=booking.starts_at_utc,
-        status=booking.status,
-        notes=booking.notes,
+def _canonical_hash_for_draft(draft: BookingDraft) -> str:
+    if not all(
+        [
+            draft.doctor_id,
+            draft.treatment_id,
+            draft.local_date,
+            draft.local_time,
+            draft.timezone,
+            draft.starts_at_utc,
+        ]
+    ):
+        raise DraftIncompleteError()
+    assert draft.doctor_id is not None
+    assert draft.treatment_id is not None
+    assert draft.local_date is not None
+    assert draft.local_time is not None
+    assert draft.timezone is not None
+    assert draft.starts_at_utc is not None
+    return canonical_booking_hash(
+        patient_id=PATIENT_ID,
+        doctor_id=draft.doctor_id,
+        treatment_id=draft.treatment_id,
+        local_date=draft.local_date,
+        local_time=draft.local_time,
+        timezone=draft.timezone,
+        starts_at_utc=draft.starts_at_utc,
+        notes=draft.notes,
     )
+
+
+def _booking_matches_draft(booking: PatientBooking, draft: BookingDraft) -> bool:
+    if not all(
+        [
+            draft.doctor_id,
+            draft.treatment_id,
+            draft.local_date,
+            draft.local_time,
+            draft.timezone,
+            draft.starts_at_utc,
+        ]
+    ):
+        return False
+    try:
+        local_date = date.fromisoformat(draft.local_date)  # type: ignore[arg-type]
+        local_time = time.fromisoformat(draft.local_time)  # type: ignore[arg-type]
+        draft_start = _as_utc(draft.starts_at_utc)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
+    return (
+        booking.patient_id == PATIENT_ID
+        and booking.doctor_id == draft.doctor_id
+        and booking.treatment_id == draft.treatment_id
+        and booking.booking_date == local_date
+        and booking.booking_time == local_time
+        and booking.timezone == draft.timezone
+        and _as_utc(booking.starts_at_utc) == draft_start
+        and booking.notes == draft.notes
+    )
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)

@@ -119,16 +119,15 @@ def test_post_bookings_creates_and_replays(harness: AppHarness, db: DBHarness) -
         assert session.scalar(select(func.count()).select_from(PatientBooking)) == 5
 
 
-def test_post_bookings_idempotency_hash_conflict(harness: AppHarness, db: DBHarness) -> None:
+def test_post_bookings_idempotency_details_conflict(harness: AppHarness, db: DBHarness) -> None:
     _token, _conversation, draft = asyncio.run(_authorized_draft(harness))
     created = _create(harness.client, draft)
     assert created.status_code == 201
-    booking_id = created.json()["booking_id"]
 
     with db.engine.connect() as connection:
         connection.exec_driver_sql(
-            "UPDATE patient_bookings SET request_hash = ? WHERE booking_id = ?",
-            ("a-different-hash", booking_id),
+            "UPDATE booking_drafts SET notes = ? WHERE id = ?",
+            ("different canonical details", draft.draft_id),
         )
         connection.commit()
 

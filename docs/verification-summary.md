@@ -60,3 +60,19 @@ bash scripts/check.sh                                     -> all local gates pas
 - Deviation: Tailscale OAuth was unavailable, so deployment uses a scoped
   self-hosted runner on the private enterprise network and key-only LAN SSH.
   See `docs/deployment-record.md`.
+
+## Audit remediation status (worktree)
+
+An independent audit of frozen revision `bfbd438` reproduced eight findings
+(AUD-001–AUD-008): failed-interruption confirmation reuse, lost booking-response
+handling, orphaned in-progress turns, public health routes, unsupported success
+prose, canonical-detail idempotency, production acceptance of the CI stub, and
+mutable action tags.
+
+The remediation branch `fix/implementation-audit-20261022` changes the controller,
+booking service, startup recovery, health routing, production settings, tests,
+and workflows. Local verification passed (141 backend tests, strict Triage lint,
+ruff, mypy, and the audit repros), but the recorded public deployment still runs
+the earlier digest. Do not treat the pre-audit AC5–AC8 rows above as evidence for
+this branch until a trusted CI run and a new deployment pass the revised health
+probes and failure-path tests.

@@ -15,6 +15,14 @@ DEV_INTERNAL_KEY = "dev-internal-tool-key-change-me"
 
 _PREFIX_RE = re.compile(r"^/[a-z0-9](?:[a-z0-9-]*[a-z0-9])?/$")
 _PLACEHOLDER_MARKERS = ("change-me", "changeme", "placeholder", "replace-me", "example")
+_TEST_PROVIDER_MARKERS = (
+    "ci-stub",
+    "ci-model-stub",
+    "model-stub",
+    "clinicpilot-ci",
+    "eval-internal",
+)
+_PRODUCTION_PROVIDER_URL = "https://api.deepseek.com/"
 
 
 class Settings(BaseSettings):
@@ -117,6 +125,13 @@ class Settings(BaseSettings):
             errors.append("INTERNAL_TOOL_KEY must be at least 32 characters")
         if not self.deepseek_api_key or self.deepseek_api_key.startswith("sk-replace"):
             errors.append("DEEPSEEK_API_KEY is required")
+        provider_text = " ".join(
+            [self.deepseek_api_key, self.deepseek_model, self.deepseek_base_url]
+        ).lower()
+        if any(marker in provider_text for marker in _TEST_PROVIDER_MARKERS):
+            errors.append("production must not use the controlled CI/evaluation provider stub")
+        if self.deepseek_base_url.rstrip("/") + "/" != _PRODUCTION_PROVIDER_URL:
+            errors.append("DEEPSEEK_BASE_URL must be the production DeepSeek endpoint")
         combined = " ".join(
             [self.demo_password_hash, self.internal_tool_key, self.deepseek_api_key]
         ).lower()

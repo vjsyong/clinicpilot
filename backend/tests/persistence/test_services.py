@@ -21,7 +21,6 @@ from app.services.errors import (
     IdempotencyConflictError,
     InvalidBookingDetailsError,
 )
-from app.services.hashing import booking_request_hash
 from sqlalchemy import func, select
 from tests.conftest import DBHarness
 
@@ -265,19 +264,13 @@ async def test_create_booking_is_idempotent_and_persisted(
     bookings = _bookings(db, frozen_clock)
     draft = await _authorized(drafts, conversation_id)
     key = f"booking:{draft.draft_id}:v{draft.version}"
-    request_hash = booking_request_hash(draft.draft_id, draft.version)
-
-    view, created = await bookings.create_from_draft(
-        draft.draft_id, draft.version, key, request_hash
-    )
+    view, created = await bookings.create_from_draft(draft.draft_id, draft.version, key)
     assert created is True
     assert view.booking_id == "B1005"
     assert view.patient_id == PATIENT_ID
     assert view.starts_at_utc == datetime(2026, 11, 17, 20, 0, tzinfo=UTC)
 
-    replay, replayed = await bookings.create_from_draft(
-        draft.draft_id, draft.version, key, request_hash
-    )
+    replay, replayed = await bookings.create_from_draft(draft.draft_id, draft.version, key)
     assert replayed is False
     assert replay.booking_id == view.booking_id
 
@@ -285,10 +278,14 @@ async def test_create_booking_is_idempotent_and_persisted(
     assert listed[0].booking_id == "B1001"
     assert any(item.booking_id == "B1005" for item in listed)
 
+    with db.session_factory() as session:
+        drifted = session.get(BookingDraft, draft.draft_id)
+        assert drifted is not None
+        drifted.notes = "different canonical details"
+        session.commit()
+
     with pytest.raises(IdempotencyConflictError):
-        await bookings.create_from_draft(
-            draft.draft_id, draft.version, key, "different-request-hash"
-        )
+        await bookings.create_from_draft(draft.draft_id, draft.version, key)
 
     booked_view = await drafts.get(conversation_id)
     assert booked_view is not None
@@ -311,10 +308,9 @@ async def test_create_requires_confirmation_and_matching_version(
     bookings = _bookings(db, frozen_clock)
     draft = await _complete(drafts, conversation_id)
     key = f"booking:{draft.draft_id}:v{draft.version}"
-    request_hash = booking_request_hash(draft.draft_id, draft.version)
 
     with pytest.raises(ConfirmationRequiredError):
-        await bookings.create_from_draft(draft.draft_id, draft.version, key, request_hash)
+        await bookings.create_from_draft(draft.draft_id, draft.version, key)
 
     wrong_version = draft.version + 1
     with pytest.raises(DraftVersionConflictError):
@@ -322,7 +318,6 @@ async def test_create_requires_confirmation_and_matching_version(
             draft.draft_id,
             wrong_version,
             f"booking:{draft.draft_id}:v{wrong_version}",
-            booking_request_hash(draft.draft_id, wrong_version),
         )
 
 
@@ -335,11 +330,10 @@ async def test_create_rejects_past_pairing_and_unknown_doctor(
     bookings = _bookings(db, frozen_clock)
     draft = await _authorized(drafts, conversation_id)
     key = f"booking:{draft.draft_id}:v{draft.version}"
-    request_hash = booking_request_hash(draft.draft_id, draft.version)
 
     frozen_clock.current = datetime(2026, 11, 18, 12, 0, tzinfo=UTC)
     with pytest.raises(InvalidBookingDetailsError):
-        await bookings.create_from_draft(draft.draft_id, draft.version, key, request_hash)
+        await bookings.create_from_draft(draft.draft_id, draft.version, key)
     frozen_clock.current = datetime(2026, 10, 22, 12, 0, tzinfo=UTC)
 
     with db.session_factory() as session:
@@ -349,7 +343,7 @@ async def test_create_rejects_past_pairing_and_unknown_doctor(
         session.commit()
 
     with pytest.raises(InvalidBookingDetailsError):
-        await bookings.create_from_draft(draft.draft_id, draft.version, key, request_hash)
+        await bookings.create_from_draft(draft.draft_id, draft.version, key)
 
     with db.session_factory() as session:
         stored = session.get(BookingDraft, draft.draft_id)
@@ -366,7 +360,7 @@ async def test_create_rejects_past_pairing_and_unknown_doctor(
         connection.commit()
 
     with pytest.raises(InvalidBookingDetailsError):
-        await bookings.create_from_draft(draft.draft_id, draft.version, key, request_hash)
+        await bookings.create_from_draft(draft.draft_id, draft.version, key)
 
 
 @pytest.mark.asyncio
@@ -403,7 +397,7 @@ async def test_booking_service_rejects_foreign_patient(
 
     bookings = _bookings(db, frozen_clock)
     with pytest.raises(ForbiddenError):
-        await bookings.create_from_draft(draft_id, 1, f"booking:{draft_id}:v1", "hash")
+        await bookings.create_from_draft(draft_id, 1, f"booking:{draft_id}:v1")
 
 
 @pytest.mark.asyncio
@@ -417,7 +411,6 @@ async def test_failed_insert_rolls_back_without_partial_booking(
     bookings = _bookings(db, frozen_clock)
     draft = await _authorized(drafts, conversation_id)
     key = f"booking:{draft.draft_id}:v{draft.version}"
-    request_hash = booking_request_hash(draft.draft_id, draft.version)
 
     def boom(
         self: BookingService,
@@ -436,7 +429,7 @@ async def test_failed_insert_rolls_back_without_partial_booking(
     monkeypatch.setattr(BookingService, "_insert_booking", boom)
 
     with pytest.raises(RuntimeError):
-        await bookings.create_from_draft(draft.draft_id, draft.version, key, request_hash)
+        await bookings.create_from_draft(draft.draft_id, draft.version, key)
 
     with db.session_factory() as session:
         assert session.scalar(select(func.count()).select_from(PatientBooking)) == 4
@@ -457,7 +450,6 @@ async def test_restart_engine_retains_booking(db: DBHarness, frozen_clock: Froze
         draft.draft_id,
         draft.version,
         key,
-        booking_request_hash(draft.draft_id, draft.version),
     )
     assert created is True
 

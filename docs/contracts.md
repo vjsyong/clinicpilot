@@ -13,7 +13,9 @@ centrally with the integrator; never silently fork one.
   - production: `/<generated-secret>/`
 - `/demo` (no slash) redirects `308` to `/demo/`.
 - Anything outside the prefix returns `404` JSON (except internal `/healthz`
-  and `/readyz`, which are never published through Cloudflare).
+  and `/readyz`). Health routes are accepted only for a loopback `Host`
+  (`127.0.0.1`, `localhost`, `::1`); any public hostname receives the same
+  prefix-style JSON `404`.
 - Cookies are scoped to the prefix path, `HttpOnly`, `SameSite=Lax`, and
   `Secure` when `APP_ENV=production`.
 - The frontend uses relative URLs only (`./api/chat`, `./assets/...`) so the
@@ -103,6 +105,9 @@ Request: `{"draft_id": "...", "draft_version": 2}`. Header:
 
 - Loads canonical details from the draft; never trusts a second copy.
 - `201` new booking, `200` idempotent replay, `409` conflict, `422` invalid.
+- The stored request hash is computed from the canonical booking payload
+  (patient, doctor, treatment, resolved local/UTC slot, timezone, notes), not
+  merely from the draft ID and version.
 - Same key + same canonical details returns the original booking.
 - Same key + different canonical details returns `409`
   `idempotency_conflict`.
@@ -114,8 +119,8 @@ Request: `{"draft_id": "...", "draft_version": 2}`. Header:
 - `GET /healthz` liveness: no dependency checks.
 - `GET /readyz` readiness: database `SELECT 1` and retrieval resources loaded.
   Does not call DeepSeek.
-- Both are reachable only on the internal network (the Cloudflare route only
-  publishes the prefix).
+- Both require a loopback `Host` header. The Cloudflare route publishes only the
+  prefix, and any public-host request for a health path returns `404`.
 
 ### Error shape
 
@@ -140,16 +145,18 @@ connection. Tables:
 `chat_turns`, `booking_drafts`.
 
 `patient_bookings` is extended with `starts_at_utc`, `timezone`,
-`idempotency_key UNIQUE`, `request_hash`, `created_at`. Source date/time columns
-remain for faithful seeding and display.
+`idempotency_key UNIQUE`, `request_hash` (canonical booking-details hash),
+`created_at`. Source date/time columns remain for faithful seeding and display.
 
 `chat_turns` has `UNIQUE(conversation_id, client_message_id)` and stores
 `request_hash`, `status`, `response_json`, timestamps.
 
 `booking_drafts` columns: `id`, `conversation_id`, `version`, `status`,
 `doctor_id`, `treatment_id`, `local_date`, `local_time`, `timezone`,
-`starts_at_utc`, `notes`, `confirmation_message_id`, `authorized_turn_id`,
-`booking_id`, timestamps.
+`starts_at_utc`, `notes`, `confirmation_message_id`, `confirmation_version`,
+`authorized_turn_id`, `booking_id`, timestamps. `BookingDraftView` exposes the
+presentation marker and `booking_id` so recovery can verify the exact presented
+version without trusting conversation text.
 
 `conversations.messages_json` stores the provider conversation including
 assistant tool calls and matching tool results. Internal message IDs use the
@@ -182,8 +189,11 @@ Confirmation rule (conservative, server-side):
   `book it`, `yes book it`, `yes confirm`, `please book it`.
 - Case/whitespace/terminal punctuation are normalized. Any correction or extra
   instruction is not a confirmation.
-- An interruption clears the presented marker; a fresh summary is required
-  before the next confirmation.
+- An interruption clears the presented marker before the provider call, so a
+  provider failure cannot leave the old summary authorized. A fresh summary is
+  required before the next confirmation.
+- Startup recovery releases orphaned in-progress turns and reconstructs the
+  original response from a committed booking before any retry can write again.
 - On valid confirmation the server sets `authorized_turn_id`, exposes only
   `create_booking`, executes the REST create, and reports the persisted record.
 - If the model fails after the booking is persisted, build the final answer from

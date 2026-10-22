@@ -60,6 +60,9 @@ class BookingDraftView(BaseModel):
     starts_at_utc: datetime | None = None
     notes: str | None = None
     missing_fields: list[str] = Field(default_factory=list)
+    booking_id: str | None = None
+    confirmation_message_id: str | None = None
+    confirmation_version: int | None = None
 
 
 class BookingView(BaseModel):

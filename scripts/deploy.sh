@@ -112,12 +112,15 @@ public_checks() {
   local prefix="${DEMO_PATH_PREFIX:-}"
   [[ -n "$prefix" ]] || { log "DEMO_PATH_PREFIX missing; cannot run public probes"; return 1; }
   local base="${PUBLIC_BASE_URL%/}"
-  local login_status wrong_status unauth_status
+  local login_status wrong_status unauth_status health_status ready_status
   login_status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$base$prefix/login" || true)"
   wrong_status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$base/definitely-not-the-prefix/" || true)"
   unauth_status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$base${prefix}api/bookings" || true)"
-  log "public probes: login=$login_status wrong_prefix=$wrong_status unauth_api=$unauth_status"
+  health_status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$base/healthz" || true)"
+  ready_status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$base/readyz" || true)"
+  log "public probes: login=$login_status wrong_prefix=$wrong_status unauth_api=$unauth_status health=$health_status ready=$ready_status"
   [[ "$login_status" == "200" && "$wrong_status" == "404" && "$unauth_status" == "401" ]]
+  [[ "$health_status" == "404" && "$ready_status" == "404" ]]
 }
 
 rollback() {

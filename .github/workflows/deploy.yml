@@ -47,13 +47,13 @@ jobs:
           echo "candidate=$SHA" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Check out the tested revision
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 1
 
       - name: Download the published image digest from the tested CI run
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           name: clinicpilot-image-digest
           path: ${{ runner.temp }}/image-digest

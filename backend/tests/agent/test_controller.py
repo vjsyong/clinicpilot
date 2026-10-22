@@ -500,3 +500,49 @@ def test_tool_result_helpers_are_compact_json() -> None:
 def test_model_response_helpers_do_not_mutate() -> None:
     response = ModelResponse(content="x")
     assert response.tool_calls == []
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "Your appointment is confirmed.",
+        "Appointment confirmed for 2026-12-15 at 15:00.",
+        "I have scheduled your appointment.",
+        "Your appointment has been scheduled.",
+        "You're all set for your appointment.",
+        "I've booked that for you.",
+    ],
+)
+async def test_unpersisted_success_variants_are_not_forwarded(claim: str) -> None:
+    harness = build_harness([text_response(claim)])
+
+    result = await harness.controller.handle_turn(harness.ctx("Book an appointment"))
+
+    assert result.events == []
+    assert harness.booking_api.create_calls == []
+    assert result.assistant_message != claim
+    assert "No booking was created" in result.assistant_message
+
+
+async def test_non_booking_prose_is_not_treated_as_a_success_claim() -> None:
+    answer = "To book an appointment, ask me for a date and time."
+    harness = build_harness([text_response(answer)])
+
+    result = await harness.controller.handle_turn(harness.ctx("How do I book?"))
+
+    assert result.assistant_message == answer
+
+
+async def test_success_claim_for_an_existing_booking_uses_canonical_details() -> None:
+    draft = complete_draft(status=DraftStatus.BOOKED.value, presented=None)
+    draft.booking_id = "B2001"
+    harness = build_harness(
+        [text_response("Your appointment is confirmed.")],
+        draft=draft,
+    )
+
+    result = await harness.controller.handle_turn(harness.ctx("Is my appointment confirmed?"))
+
+    assert result.events == []
+    assert "B2001" in result.assistant_message
+    assert "No booking was created" not in result.assistant_message

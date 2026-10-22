@@ -40,9 +40,10 @@ vendor/triage/     pinned MIT design system and strict lint tooling
 
 ### Request flow
 
-1. `PrefixApp` accepts only paths beginning with the configured prefix (plus
-   internal `/healthz` and `/readyz`), strips the prefix, and forwards to the
-   FastAPI app. `/prefix` is canonicalized to `/prefix/` with a `308`.
+1. `PrefixApp` accepts only paths beginning with the configured prefix, strips
+   the prefix, and forwards to the FastAPI app. `/prefix` is canonicalized to
+   `/prefix/` with a `308`. Internal `/healthz` and `/readyz` additionally
+   require a loopback `Host`; a public hostname receives JSON `404`.
 2. Browser requests use the `clinicpilot_session` cookie. Session tokens are
    random 32-byte values; only their SHA-256 hashes are stored. Cookies are
    `HttpOnly`, `SameSite=Lax`, and `Secure` in production, scoped to the prefix
@@ -85,9 +86,11 @@ Additional tables:
   `starts_at_utc`, timezone, presentation marker, authorization turn, booking id.
 
 `patient_bookings` is extended with `starts_at_utc`, `timezone`,
-`idempotency_key UNIQUE`, `request_hash`, and `created_at`. Seeded bookings get
-the clinic timezone and a normalized UTC timestamp. New IDs are allocated from
-the next numeric `B` value inside the insert transaction.
+`idempotency_key UNIQUE`, `request_hash`, and `created_at`. `request_hash` covers
+the canonical booking payload (patient, doctor, treatment, resolved slot,
+timezone, notes), not just the draft ID/version. Seeded bookings get the clinic
+timezone and a normalized UTC timestamp. New IDs are allocated from the next
+numeric `B` value inside the insert transaction.
 
 Seeding upserts source rows by source ID and never deletes user-created
 bookings, so it is safe to run on every container start.
@@ -132,11 +135,17 @@ re-presents the canonical summary in that case.
 
 `POST /api/bookings` requires `X-Internal-Tool-Key` and
 `Idempotency-Key: booking:<draft-id>:v<version>`. The server loads canonical
-details from the draft. A replay with the same key and request hash returns the
-existing booking with `200`; the same key with different details returns `409`.
-Insert and draft-booked updates happen in one transaction. If a booking already
-exists for the draft, it is recovered idempotently (covers a lost response after
-commit). A failed turn can be retried with the same message ID.
+details from the draft. A replay with the same key and canonical details returns
+the existing booking with `200`; the same key with different canonical details
+returns `409`. Insert and draft-booked updates happen in one transaction.
+
+The agent retries a lost create response once with the same key. If the response
+is still unavailable but the draft is marked booked, the controller reconstructs
+the success result from persisted draft/booking data instead of claiming failure.
+At startup, `app.services.recovery` releases orphaned in-progress turns and, for
+a committed booking, stores the original replay response before traffic resumes.
+A failed turn can therefore be retried with the same message ID without a
+duplicate write.
 
 ## 5. Agent and tools
 
@@ -164,8 +173,10 @@ assistant tool-call / tool-result pairing. The DeepSeek client uses
 internal `_cp_*` message keys before sending.
 
 If the model or provider fails after a confirmed write, the final answer is
-built from the persisted booking record. The phrase "booked" is never accepted
-from generated text alone.
+built from the persisted booking record. Generated success wording is replaced by
+canonical text; when no booking exists it becomes the deterministic
+`No booking was created` response. The phrase "booked" is never accepted from
+generated text alone.
 
 ## 6. Retrieval
 
@@ -221,17 +232,18 @@ always cleans up.
 CI jobs: backend (ruff, format, mypy, pytest), frontend (lint, typecheck, build,
 strict vendored Triage lint), security (Gitleaks, pip-audit, npm audit),
 container (image build, Compose smoke, Playwright, restart persistence), and an
-aggregate `quality` gate. Publication to GHCR happens only after a successful
-`main` run, loads the exact image artifact tested by the container job, tags it
-with the full commit SHA, and records the digest. Deployment promotes that digest
-through Tailscale-only SSH; it never rebuilds. Rollback restores the previous
-image but deliberately leaves the database volume untouched. The deploy job
-runs on a repository-scoped self-hosted runner that is a tailnet member and uses
-a key-only SSH credential over Tailscale MagicDNS to the dedicated VM. The
-ephemeral GitHub-hosted + Tailscale OAuth join was unavailable; this is the
-documented runner deviation. `main` requires the aggregate
-`quality` status. Automatic rollback was exercised with a forced readiness
-failure: the previous digest was restored and the database volume remained.
+aggregate `quality` gate. Every external action is pinned to a full commit SHA.
+Publication to GHCR happens only after a successful `main` run, loads the exact
+image artifact tested by the container job, tags it with the full commit SHA, and
+records the digest. Deployment promotes that digest through Tailscale-only SSH; it
+never rebuilds. Rollback restores the previous image but deliberately leaves the
+database volume untouched. The deploy job runs on a repository-scoped self-hosted
+runner that is a tailnet member and uses a key-only SSH credential over Tailscale
+MagicDNS to the dedicated VM. The ephemeral GitHub-hosted + Tailscale OAuth join
+was unavailable; this is the documented runner deviation. `main` requires the
+aggregate `quality` status. Automatic rollback was exercised with a forced
+readiness failure: the previous digest was restored and the database volume
+remained. Public deployment probes require health paths to return `404`.
 
 ## 10. Evaluation
 
@@ -264,14 +276,16 @@ Limitations:
 - No cancellation, rescheduling, conflict detection, diagnosis, or prescribing.
 - In-process locks and SQLite do not scale horizontally; the MVP is one worker.
 - An in-flight turn is marked `in_progress` and a concurrent duplicate receives a
-  retryable `409`; a stale turn can be retried with the same message ID.
+  retryable `409`. Startup recovery releases turns orphaned by a previous
+  process, replaying a committed booking response or making the turn retryable.
 - Automatic deployment depends on external VM, tailnet, Cloudflare, and GHCR
   configuration. It fails closed when those are unavailable and does not claim
   success without direct readiness and public-route evidence.
-- The manual deployment used the locally built, locally tested image. Remote
-  GitHub Actions, GHCR publication, Tailscale-only promotion, branch protection,
-  and automatic rollback were not exercised in this session; see
-  `docs/deployment-record.md`.
+- Remote GitHub Actions, GHCR publication, digest promotion, branch protection,
+  and a forced-failure rollback drill are recorded in
+  `docs/deployment-record.md`. The deployment runner is a repository-scoped
+  self-hosted tailnet member rather than an ephemeral GitHub-hosted Tailscale
+  runner, and the VM runs on `enterprise` because `cerritos` lacks KVM.
 - The planned `cerritos` node cannot run QEMU guests (no KVM), so the recovered
   VM runs on `enterprise` with the same CPU/RAM/disk shape.
 - The public image contains no production prefix or credentials; the demo URL

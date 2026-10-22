@@ -53,6 +53,7 @@ from app.contracts import (
     TurnContext,
     TurnResult,
 )
+from app.services.booking_views import booking_success_text, booking_view_from_draft
 from app.settings import Settings
 
 logger = logging.getLogger("clinicpilot.agent")
@@ -79,11 +80,15 @@ NO_BOOKING_CREATED_MESSAGE = (
 )
 
 _BOOKING_SUCCESS_CLAIM = re.compile(
-    r"(?:\b(?:your\s+)?(?:appointment|booking)\s+(?:is|has\s+been|was)\s+(?:now\s+)?booked\b"
-    r"|\byou(?:'re|\s+are)\s+booked\b"
-    r"|\bi(?:'ve|\s+have)?\s+booked\b"
-    r"|\bsuccessfully\s+booked\b"
-    r"|\bbooking\s+confirmed\b)",
+    r"(?:\b(?:your\s+)?(?:appointment|booking|reservation)\s+"
+    r"(?:is|has\s+been|was|has)\s+(?:now\s+)?"
+    r"(?:booked|confirmed|scheduled|reserved|complete|all\s+set)\b"
+    r"|\b(?:appointment|booking|reservation)\s+confirmed\b"
+    r"|\byou(?:'re|\s+are)\s+(?:now\s+)?(?:booked|confirmed|all\s+set)\b"
+    r"|\bi(?:'ve|\s+have)?\s+(?:booked|scheduled|reserved)\b"
+    r"|\bsuccessfully\s+(?:booked|scheduled|reserved)\b"
+    r"|\bbooking\s+confirmed\b"
+    r"|\bappointment\s+confirmed\b)",
     re.IGNORECASE,
 )
 
@@ -102,7 +107,6 @@ _CONFIRMATION_PHRASES = frozenset(
         "please book it",
     }
 )
-_UNSET = object()
 
 
 @dataclass(slots=True)
@@ -163,6 +167,20 @@ class AgentController:
         ):
             return await self._confirmation_turn(ctx, messages)
 
+        await self._invalidate_presentation(ctx.conversation_id)
+
+        # A committed booking may still need to be reported after a lost
+        # response. Only a confirmation retry uses this recovery path; ordinary
+        # follow-up questions continue normally.
+        if (
+            draft is not None
+            and draft.status == DraftStatus.BOOKED.value
+            and is_confirmation_phrase(ctx.user_text)
+        ):
+            recovered = await self._booked_success(ctx, messages, draft)
+            if recovered is not None:
+                return recovered
+
         return await self._normal_turn(ctx, messages, draft)
 
     async def _confirmation_turn(
@@ -192,6 +210,11 @@ class AgentController:
         except Exception as exc:
             logger.warning("Booking API failure (%s).", type(exc).__name__)
             failure_message = INTERNAL_BOOKING_FAILURE_MESSAGE
+
+        if failure_message is not None:
+            recovered = await self._recover_after_failed_booking(ctx, messages)
+            if recovered is not None:
+                return recovered
 
         if calls:
             messages.append(_assistant_tool_call_message(calls, content=None))
@@ -278,16 +301,64 @@ class AgentController:
         authorized: BookingDraftView,
         message: str,
     ) -> TurnResult:
+        view = await self._current_draft(ctx.conversation_id)
+        if view is not None and view.status == DraftStatus.BOOKED.value:
+            recovered = await self._booked_success(ctx, messages, view)
+            if recovered is not None:
+                return recovered
         try:
             await self._drafts.mark_failed(ctx.conversation_id)
         except Exception as exc:
             logger.warning("Could not mark draft failed (%s).", type(exc).__name__)
-        view = await self._current_draft(ctx.conversation_id)
         if view is None:
             view = authorized
         return await self._finish_failure(
             ctx, messages, view, f"{message} {BOOKING_FAILURE_MESSAGE}"
         )
+
+    async def _recover_after_failed_booking(
+        self, ctx: TurnContext, messages: list[dict[str, Any]]
+    ) -> TurnResult | None:
+        view = await self._current_draft(ctx.conversation_id)
+        if view is None or view.status != DraftStatus.BOOKED.value:
+            return None
+        return await self._booked_success(ctx, messages, view)
+
+    async def _booked_success(
+        self,
+        ctx: TurnContext,
+        messages: list[dict[str, Any]],
+        view: BookingDraftView,
+    ) -> TurnResult | None:
+        booking = booking_view_from_draft(view)
+        if booking is None:
+            logger.warning("Booked draft %s is missing canonical details.", view.draft_id)
+            return None
+        current = await self._current_draft(ctx.conversation_id)
+        if current is not None and current.status == DraftStatus.BOOKED.value:
+            view = current
+        else:
+            view = view.model_copy(
+                update={"status": DraftStatus.BOOKED.value, "booking_id": booking.booking_id}
+            )
+        text = booking_success_text(booking)
+        assistant_id = str(uuid.uuid4())
+        messages.append(_assistant_text_message(text, assistant_id))
+        await self._conversations.save_messages(ctx.conversation_id, messages, ctx.now)
+        self._presented.pop(ctx.conversation_id, None)
+        return TurnResult(
+            assistant_message=text,
+            sources=[],
+            booking_draft=view,
+            events=[Event(type="booking_created", booking=booking)],
+        )
+
+    async def _invalidate_presentation(self, conversation_id: str) -> None:
+        self._presented[conversation_id] = None
+        try:
+            await self._drafts.clear_presented(conversation_id)
+        except Exception as exc:
+            logger.warning("Could not clear presentation (%s).", type(exc).__name__)
 
     async def _finish_failure(
         self,
@@ -388,13 +459,21 @@ class AgentController:
         # draft exists, re-present its canonical summary so the next explicit
         # "yes" is a fresh, valid confirmation.
         if final_text and _claims_booking_success(final_text):
-            final_text = NO_BOOKING_CREATED_MESSAGE
-            if (
-                view is not None
-                and view.status == DraftStatus.AWAITING_CONFIRMATION.value
-                and not view.missing_fields
-            ):
-                presented_view = view
+            existing_booking = (
+                booking_view_from_draft(view)
+                if view is not None and view.status == DraftStatus.BOOKED.value
+                else None
+            )
+            if existing_booking is not None:
+                final_text = booking_success_text(existing_booking)
+            else:
+                final_text = NO_BOOKING_CREATED_MESSAGE
+                if (
+                    view is not None
+                    and view.status == DraftStatus.AWAITING_CONFIRMATION.value
+                    and not view.missing_fields
+                ):
+                    presented_view = view
 
         if (
             presented_view is not None
@@ -668,22 +747,6 @@ def is_confirmation_phrase(text: str) -> bool:
     return normalize_confirmation_text(text) in _CONFIRMATION_PHRASES
 
 
-def booking_success_text(booking: BookingView) -> str:
-    """Deterministic success text built only from the persisted record."""
-    lines = [
-        "Booking confirmed.",
-        f"- Booking ID: {booking.booking_id}",
-        f"- Doctor: {booking.doctor_name} ({booking.doctor_id})",
-        f"- Treatment: {booking.treatment_name} ({booking.treatment_id})",
-        f"- Clinic: {booking.clinic_name} ({booking.clinic_id})",
-        f"- Appointment: {booking.local_date} at {booking.local_time} ({booking.timezone})",
-        f"- Status: {booking.status}",
-    ]
-    if booking.notes:
-        lines.append(f"- Notes: {booking.notes}")
-    return "\n".join(lines)
-
-
 def _eligible_confirmation(
     controller: AgentController,
     conversation_id: str,
@@ -704,22 +767,21 @@ def _eligible_confirmation(
     if not last_assistant_id:
         return False
 
-    if last_presentation is not None:
-        return last_presentation == (draft.draft_id, draft.version)
-
-    presented_version = getattr(draft, "confirmation_version", _UNSET)
-    if isinstance(presented_version, int) and presented_version != draft.version:
-        return False
-    presented_attribute = getattr(draft, "confirmation_message_id", _UNSET)
-    if isinstance(presented_attribute, str) and presented_attribute:
-        return presented_attribute == last_assistant_id
-
     if conversation_id in controller._presented:
         tracked = controller._presented[conversation_id]
         if tracked is None:
             return False
-        return tracked[0] == draft.version and tracked[1] == last_assistant_id
+        if tracked[0] != draft.version or tracked[1] != last_assistant_id:
+            return False
 
+    presented_version = draft.confirmation_version
+    if presented_version != draft.version:
+        return False
+    presented_attribute = draft.confirmation_message_id
+    if not presented_attribute or presented_attribute != last_assistant_id:
+        return False
+    if last_presentation is not None:
+        return last_presentation == (draft.draft_id, draft.version)
     if not last_assistant_content:
         return False
     return canonical_summary(draft) in last_assistant_content

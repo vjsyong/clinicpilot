@@ -6,6 +6,7 @@ through the internal HTTP API, using a server-owned key and idempotency key.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -18,6 +19,8 @@ from app.settings import Settings
 
 INTERNAL_TIMEOUT_SECONDS = 15.0
 BOOKING_CREATE_KEY_PREFIX = "booking"
+BOOKING_CREATE_ATTEMPTS = 2
+BOOKING_RETRY_DELAY_SECONDS = 0.1
 
 
 class BookingApiError(RuntimeError):
@@ -124,19 +127,31 @@ class RestBookingApi:
 
     async def create_booking(self, draft_id: str, draft_version: int) -> BookingView:
         idempotency_key = f"{BOOKING_CREATE_KEY_PREFIX}:{draft_id}:v{draft_version}"
-        response = await self._request(
-            "POST",
-            "api/bookings",
-            json={"draft_id": draft_id, "draft_version": draft_version},
-            headers={"Idempotency-Key": idempotency_key},
+        last_error: BookingApiError | None = None
+        for attempt in range(BOOKING_CREATE_ATTEMPTS):
+            try:
+                response = await self._request(
+                    "POST",
+                    "api/bookings",
+                    json={"draft_id": draft_id, "draft_version": draft_version},
+                    headers={"Idempotency-Key": idempotency_key},
+                )
+            except BookingApiError as exc:
+                last_error = exc
+                if attempt + 1 < BOOKING_CREATE_ATTEMPTS and exc.retryable:
+                    await asyncio.sleep(BOOKING_RETRY_DELAY_SECONDS)
+                    continue
+                raise
+            booking = _booking_view(_json_payload(response))
+            if booking.patient_id != PATIENT_ID:
+                raise BookingApiError(
+                    "The booking service returned a booking for an unexpected patient.",
+                    retryable=False,
+                )
+            return booking
+        raise last_error or BookingApiError(
+            "The booking service did not confirm the result.", retryable=True
         )
-        booking = _booking_view(_json_payload(response))
-        if booking.patient_id != PATIENT_ID:
-            raise BookingApiError(
-                "The booking service returned a booking for an unexpected patient.",
-                retryable=False,
-            )
-        return booking
 
     async def aclose(self) -> None:
         if self._owns_client:

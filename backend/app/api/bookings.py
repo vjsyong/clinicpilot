@@ -19,7 +19,6 @@ from app.api.deps import (
 from app.contracts import PATIENT_ID
 from app.services.bookings import BookingService
 from app.services.errors import ServiceError
-from app.services.hashing import booking_request_hash
 
 router = APIRouter()
 
@@ -60,6 +59,5 @@ async def create_booking(
         payload.draft_id,
         payload.draft_version,
         idempotency_key,
-        booking_request_hash(payload.draft_id, payload.draft_version),
     )
     return JSONResponse(jsonable_encoder(view), status_code=201 if created else 200)

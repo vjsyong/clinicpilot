@@ -46,9 +46,7 @@ TREATMENTS: dict[str, str] = {
 
 
 class FakeDraftView(BookingDraftView):
-    """BookingDraftView plus the presentation marker hidden by the contract view."""
-
-    confirmation_message_id: str | None = None
+    """BookingDraftView with explicit presentation state for tests."""
 
 
 @dataclass
@@ -168,6 +166,7 @@ class FakeDraftStore:
             else DraftStatus.COLLECTING_DETAILS.value
         )
         candidate.confirmation_message_id = None
+        candidate.confirmation_version = None
         self.draft = candidate
         return DraftUpdate(
             draft=candidate,
@@ -180,6 +179,7 @@ class FakeDraftStore:
         if self.draft is not None:
             self.draft.status = DraftStatus.CANCELLED.value
             self.draft.confirmation_message_id = None
+            self.draft.confirmation_version = None
 
     async def mark_presented(
         self, conversation_id: str, assistant_message_id: str, version: int
@@ -191,11 +191,13 @@ class FakeDraftStore:
             and self.draft.status == DraftStatus.AWAITING_CONFIRMATION.value
         ):
             self.draft.confirmation_message_id = assistant_message_id
+            self.draft.confirmation_version = version
 
     async def clear_presented(self, conversation_id: str) -> None:
         self.clears += 1
         if self.draft is not None:
             self.draft.confirmation_message_id = None
+            self.draft.confirmation_version = None
 
     async def authorize(self, conversation_id: str, turn_id: str) -> BookingDraftView:
         if self.draft is None:
@@ -214,7 +216,9 @@ class FakeDraftStore:
         self.booked.append(booking)
         if self.draft is not None:
             self.draft.status = DraftStatus.BOOKED.value
+            self.draft.booking_id = booking.booking_id
             self.draft.confirmation_message_id = None
+            self.draft.confirmation_version = None
 
     async def mark_failed(self, conversation_id: str) -> None:
         self.failures += 1
@@ -365,6 +369,7 @@ def complete_draft(
         timezone=timezone,
         starts_at_utc=datetime(2026, 11, 5, 14, 0, tzinfo=UTC),
         confirmation_message_id=presented,
+        confirmation_version=version if presented else None,
     )
 
 

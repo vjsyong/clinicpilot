@@ -21,6 +21,43 @@ def _request_id() -> str:
     return str(uuid.uuid4())
 
 
+_INTERNAL_HEALTH_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _not_found_response() -> JSONResponse:
+    return JSONResponse(
+        {
+            "error": {
+                "code": "not_found",
+                "message": "Not found.",
+                "retryable": False,
+            },
+            "request_id": _request_id(),
+        },
+        status_code=404,
+        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+    )
+
+
+def _host_name(scope: Scope) -> str:
+    headers = dict(scope.get("headers", []))
+    raw = headers.get(b"host", b"").decode("latin-1").strip().lower()
+    if not raw:
+        return ""
+    if raw.startswith("["):
+        end = raw.find("]")
+        return raw[1:end] if end >= 0 else raw
+    return raw.split(":", 1)[0]
+
+
+def _internal_health_request(scope: Scope) -> bool:
+    """Health routes are for the container/host network, never the tunnel."""
+    headers = dict(scope.get("headers", []))
+    if b"cf-ray" in headers or b"cf-connecting-ip" in headers:
+        return False
+    return _host_name(scope) in _INTERNAL_HEALTH_HOSTS
+
+
 class PrefixApp:
     """Serve the whole application beneath one runtime-configured prefix."""
 
@@ -40,7 +77,11 @@ class PrefixApp:
 
         path: str = scope.get("path", "/")
         if path in self.internal_paths:
-            await self.app(scope, receive, send)
+            if _internal_health_request(scope):
+                await self.app(scope, receive, send)
+            else:
+                not_found = _not_found_response()
+                await not_found(scope, receive, send)
             return
         if path == self.bare_prefix:
             query = scope.get("query_string", b"").decode("latin-1")
@@ -49,18 +90,7 @@ class PrefixApp:
             await redirect(scope, receive, send)
             return
         if not path.startswith(self.prefix):
-            not_found = JSONResponse(
-                {
-                    "error": {
-                        "code": "not_found",
-                        "message": "Not found.",
-                        "retryable": False,
-                    },
-                    "request_id": _request_id(),
-                },
-                status_code=404,
-                headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
-            )
+            not_found = _not_found_response()
             await not_found(scope, receive, send)
             return
 
@@ -87,6 +117,12 @@ def create_app(
         app.state.engine = engine
         app.state.session_factory = session_factory
         app.state.clock = SystemClock()
+
+        from app.services.recovery import recover_interrupted_turns
+
+        recovered = recover_interrupted_turns(session_factory, app.state.clock)
+        if recovered:
+            logger.info("Recovered %s interrupted chat turn(s)", recovered)
 
         build_index = index_factory
         if build_index is None:

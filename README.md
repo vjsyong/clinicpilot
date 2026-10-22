@@ -74,7 +74,8 @@ docker compose -f compose.yaml -f compose.local.yaml up --build
 ```
 
 The application is published only on `127.0.0.1:8000`; the tunnel service is
-disabled in the local override.
+disabled in the local override. Health endpoints (`/healthz`, `/readyz`) are
+accepted only from a loopback host and are not published through the tunnel.
 
 The production topology (`compose.yaml`) publishes no application port and runs
 `app` plus `cloudflared`:

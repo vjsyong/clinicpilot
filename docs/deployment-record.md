@@ -107,3 +107,12 @@ deploy left the SQLite volume intact and kept B1005.
   deployment and checks use Tailscale MagicDNS, so this does not affect delivery.
 - **Node deviation.** `cerritos` lacks KVM; the VM runs on `enterprise` with the
   same 2 vCPU / 4 GB / 40 GB shape. See the VM section above.
+
+## Audit follow-up (not yet deployed)
+
+A later audit of revision `bfbd438` found that the public hostname returned `200`
+for `/healthz` and `/readyz`. The application now accepts those routes only for
+a loopback `Host`, and `scripts/deploy.sh` requires both public probes to return
+`404`. The recorded deployment above still runs the earlier digest; redeploy and
+re-run the public and private probes before treating this finding as closed in
+production.

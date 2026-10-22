@@ -60,7 +60,7 @@ class DraftService:
             draft = _latest_draft(session, conversation_id, include_booked=True)
             if draft is None:
                 return None
-            return _view(session, draft)
+            return draft_view(session, draft)
         finally:
             session.close()
 
@@ -78,7 +78,7 @@ class DraftService:
             unknown = sorted(set(changes) - _ALLOWED_FIELDS)
             if unknown:
                 return DraftUpdate(
-                    draft=_view(session, draft) if draft is not None else None,
+                    draft=draft_view(session, draft) if draft is not None else None,
                     missing_fields=_missing(draft),
                     changed=False,
                     errors=[f"Unsupported draft field: {field}" for field in unknown],
@@ -100,7 +100,7 @@ class DraftService:
             )
             if errors:
                 return DraftUpdate(
-                    draft=_view(session, draft) if draft is not None else None,
+                    draft=draft_view(session, draft) if draft is not None else None,
                     missing_fields=missing,
                     changed=False,
                     errors=errors,
@@ -116,7 +116,7 @@ class DraftService:
             changed = draft is None or _differs(draft, candidate, timezone)
             if not changed:
                 return DraftUpdate(
-                    draft=_view(session, draft) if draft is not None else None,
+                    draft=draft_view(session, draft) if draft is not None else None,
                     missing_fields=missing,
                     changed=False,
                 )
@@ -154,7 +154,7 @@ class DraftService:
             session.commit()
 
             return DraftUpdate(
-                draft=_view(session, draft),
+                draft=draft_view(session, draft),
                 missing_fields=missing,
                 changed=True,
             )
@@ -240,7 +240,7 @@ class DraftService:
             draft.status = DraftStatus.BOOKING_IN_PROGRESS.value
             draft.updated_at = self._clock.now()
             session.commit()
-            return _view(session, draft)
+            return draft_view(session, draft)
         except Exception:
             session.rollback()
             raise
@@ -461,7 +461,7 @@ def _missing_values(
     return missing
 
 
-def _view(session: Session, draft: BookingDraft) -> BookingDraftView:
+def draft_view(session: Session, draft: BookingDraft) -> BookingDraftView:
     doctor: Doctor | None = None
     treatment: Treatment | None = None
     clinic: Clinic | None = None
@@ -487,4 +487,7 @@ def _view(session: Session, draft: BookingDraft) -> BookingDraftView:
         starts_at_utc=draft.starts_at_utc,
         notes=draft.notes,
         missing_fields=_missing(draft),
+        booking_id=draft.booking_id,
+        confirmation_message_id=draft.confirmation_message_id,
+        confirmation_version=draft.confirmation_version,
     )

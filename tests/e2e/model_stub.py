@@ -62,14 +62,34 @@ BOOKINGS_LIST_RE = re.compile(
     re.IGNORECASE,
 )
 
-DRAFT_ARGUMENTS = {
+DRAFT_BASE = {
     "doctor_id": "D104",
     "treatment_id": "T005",
+}
+DRAFT_DEFAULT_SLOT = {
     "local_date": "2030-06-17",
     "local_time": "15:00",
 }
+DATE_RE = re.compile(r"\b(20\d{2}-\d{2}-\d{2})\b")
+TIME_RE = re.compile(r"\b([01]\d|2[0-3]):([0-5]\d)\b")
+CONSULT_RE = re.compile(r"\b(consultation|appointment|book|booking)\b", re.IGNORECASE)
+BOOKING_ID_RE = re.compile(r"\b(B\d{4})\b")
+EDIT_RE = re.compile(r"\bedit\b", re.IGNORECASE)
 DRAFT_DOCTOR = "Dr. James Wilson"
 DRAFT_TREATMENT = "Joint & Pain Consultation"
+
+
+def _draft_arguments(text: str) -> dict[str, str]:
+    arguments = dict(DRAFT_BASE)
+    date_match = DATE_RE.search(text)
+    time_match = TIME_RE.search(text)
+    if date_match and time_match:
+        arguments["local_date"] = date_match.group(1)
+        arguments["local_time"] = f"{time_match.group(1)}:{time_match.group(2)}"
+        return arguments
+    if CONSULT_RE.search(text):
+        arguments.update(DRAFT_DEFAULT_SLOT)
+    return arguments
 
 
 def _normalize(text: str) -> str:
@@ -207,8 +227,8 @@ def _draft_summary(content: Any) -> str:
 
     doctor = str(draft.get("doctor_name") or DRAFT_DOCTOR)
     treatment = str(draft.get("treatment_name") or DRAFT_TREATMENT)
-    date = str(draft.get("local_date") or DRAFT_ARGUMENTS["local_date"])
-    clock = str(draft.get("local_time") or DRAFT_ARGUMENTS["local_time"])
+    date = str(draft.get("local_date") or "not set")
+    clock = str(draft.get("local_time") or "not set")
     return (
         f"Here is the appointment summary: {treatment} with {doctor} on {date} at {clock}. "
         "Shall I book it? Reply yes to confirm."
@@ -294,7 +314,7 @@ def decide(messages: list[dict[str, Any]], tools: Any) -> dict[str, Any]:
             ):
                 if "update_booking_draft" in name_set:
                     return _tool_completion(
-                        "update_booking_draft", DRAFT_ARGUMENTS, len(results)
+                        "update_booking_draft", _draft_arguments(last_user), len(results)
                     )
                 return _text_completion(
                     "I can help with that consultation. Which date and time would you prefer?"
@@ -306,9 +326,44 @@ def decide(messages: list[dict[str, Any]], tools: Any) -> dict[str, Any]:
             )
         if tool_name == "abandon_booking_draft":
             return _text_completion("The booking draft has been cancelled.")
+        if tool_name == "delete_patient_booking":
+            return _text_completion("I need one more confirmation before removing it.")
+        if tool_name == "request_demo_reset":
+            return _text_completion("The reset requires the confirmation card.")
 
     if normalized_user in AFFIRMATIVES and "create_booking" in name_set:
         return _tool_completion("create_booking", {}, len(results))
+
+    if "reset" in normalized_user and "request_demo_reset" in name_set:
+        return _tool_completion("request_demo_reset", {}, len(results))
+
+    if (
+        "delete" in normalized_user
+        and BOOKING_ID_RE.search(last_user)
+        and "delete_patient_booking" in name_set
+    ):
+        return _tool_completion(
+            "delete_patient_booking",
+            {"booking_id": BOOKING_ID_RE.search(last_user).group(1)},
+            len(results),
+        )
+
+    edit_match = BOOKING_ID_RE.search(last_user)
+    if edit_match and EDIT_RE.search(last_user) and "update_booking_draft" in name_set:
+        return _tool_completion(
+            "update_booking_draft",
+            {"booking_id": edit_match.group(1)},
+            len(results),
+        )
+
+    if (
+        DATE_RE.search(last_user)
+        and TIME_RE.search(last_user)
+        and "update_booking_draft" in name_set
+    ):
+        return _tool_completion(
+            "update_booking_draft", _draft_arguments(last_user), len(results)
+        )
 
     wants_knee = bool(KNEE_RE.search(last_user))
     wants_booking = bool(BOOKING_RE.search(last_user))
@@ -321,7 +376,7 @@ def decide(messages: list[dict[str, Any]], tools: Any) -> dict[str, Any]:
     if (wants_knee or wants_booking) and not wants_hours:
         if "update_booking_draft" in name_set and "search_knowledge" in called:
             return _tool_completion(
-                "update_booking_draft", DRAFT_ARGUMENTS, len(results)
+                "update_booking_draft", _draft_arguments(last_user), len(results)
             )
         if "search_knowledge" in name_set:
             return _tool_completion(
@@ -331,7 +386,7 @@ def decide(messages: list[dict[str, Any]], tools: Any) -> dict[str, Any]:
             )
         if "update_booking_draft" in name_set:
             return _tool_completion(
-                "update_booking_draft", DRAFT_ARGUMENTS, len(results)
+                "update_booking_draft", _draft_arguments(last_user), len(results)
             )
 
     if wants_hours and "search_knowledge" in name_set:
@@ -428,7 +483,9 @@ class ModelStubHandler(BaseHTTPRequestHandler):
             return
         self._send_error_json(HTTPStatus.NOT_FOUND, "not found")
 
-    def _send_stream(self, model: str, decision: dict[str, Any]) -> None:
+    def _send_stream(
+        self, model: str, decision: dict[str, Any], messages: list[dict[str, Any]]
+    ) -> None:
         created = int(time.time())
         stream_id = f"chatcmpl-stub-{created}"
 
@@ -449,6 +506,12 @@ class ModelStubHandler(BaseHTTPRequestHandler):
             return "data: " + json.dumps(payload, separators=(",", ":")) + "\n\n"
 
         frames: list[str] = []
+        prompt_chars = sum(len(str(item.get("content") or "")) for item in messages)
+        usage = {
+            "prompt_tokens": max(1, prompt_chars // 4),
+            "completion_tokens": max(1, len(json.dumps(decision)) // 4),
+            "total_tokens": max(1, (prompt_chars + len(json.dumps(decision))) // 4),
+        }
         content = decision.get("content")
         if isinstance(content, str) and content:
             frames.append(chunk({"role": "assistant", "content": content}))
@@ -458,6 +521,21 @@ class ModelStubHandler(BaseHTTPRequestHandler):
             frames.append(chunk({}, "tool_calls"))
         else:
             frames.append(chunk({}, "stop"))
+        frames.append(
+            "data: "
+            + json.dumps(
+                {
+                    "id": stream_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model,
+                    "choices": [],
+                    "usage": usage,
+                },
+                separators=(",", ":"),
+            )
+            + "\n\n"
+        )
         frames.append("data: [DONE]\n\n")
         body = "".join(frames).encode("utf-8")
         self.send_response(HTTPStatus.OK)
@@ -502,7 +580,7 @@ class ModelStubHandler(BaseHTTPRequestHandler):
             model = DEFAULT_MODEL
         decision = decide(messages, payload.get("tools"))
         if payload.get("stream"):
-            self._send_stream(model, decision)
+            self._send_stream(model, decision, messages)
             return
         self._send_json(
             HTTPStatus.OK,

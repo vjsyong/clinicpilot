@@ -22,10 +22,12 @@ MAX_FILTERS = 8
 _DATE_PATTERN = r"^\d{4}-\d{2}-\d{2}$"
 _TIME_PATTERN = r"^(?:[01]\d|2[0-3]):[0-5]\d$"
 _ID_PATTERN = r"^[A-Z]\d{3}$"
+_BOOKING_ID_PATTERN = r"^B\d{4}$"
 
 _DATE_RE = re.compile(_DATE_PATTERN)
 _TIME_RE = re.compile(_TIME_PATTERN)
 _ID_RE = re.compile(_ID_PATTERN)
+_BOOKING_ID_RE = re.compile(_BOOKING_ID_PATTERN)
 
 
 class ToolValidationError(ValueError):
@@ -87,6 +89,14 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "parameters": {
             "type": "object",
             "properties": {
+                "booking_id": {
+                    "type": ["string", "null"],
+                    "pattern": _BOOKING_ID_PATTERN,
+                    "description": (
+                        "Existing booking ID to edit, e.g. B1001. The server prefills "
+                        "the current details and requires a fresh confirmation."
+                    ),
+                },
                 "doctor_id": {
                     "type": ["string", "null"],
                     "pattern": _ID_PATTERN,
@@ -113,6 +123,41 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                     "description": "Optional patient notes.",
                 },
             },
+            "required": [],
+            "additionalProperties": False,
+        },
+    },
+    "delete_patient_booking": {
+        "name": "delete_patient_booking",
+        "description": (
+            "Request removal of one of P001's bookings from the active list. The "
+            "server requires explicit patient confirmation before deleting; the "
+            "audit record is retained. Use the exact booking ID returned by "
+            "get_patient_bookings."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "booking_id": {
+                    "type": "string",
+                    "pattern": _BOOKING_ID_PATTERN,
+                    "description": "Booking ID to remove, e.g. B1001.",
+                }
+            },
+            "required": ["booking_id"],
+            "additionalProperties": False,
+        },
+    },
+    "request_demo_reset": {
+        "name": "request_demo_reset",
+        "description": (
+            "Ask to reset the shared demo workspace to its seed state. The "
+            "application requires explicit confirmation and will clear chats and "
+            "drafts while retaining the audit."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
             "required": [],
             "additionalProperties": False,
         },
@@ -168,9 +213,16 @@ def validate_tool_arguments(name: str, arguments: str | Mapping[str, Any]) -> di
         raise UnknownToolError(f"Unknown tool: {name}")
 
     parsed = _decode_arguments(arguments)
-    if name in {"get_patient_bookings", "abandon_booking_draft", "create_booking"}:
+    if name in {
+        "get_patient_bookings",
+        "abandon_booking_draft",
+        "create_booking",
+        "request_demo_reset",
+    }:
         _reject_unknown_keys(name, parsed, set())
         return {}
+    if name == "delete_patient_booking":
+        return _validate_delete_booking(parsed)
 
     if name == "search_knowledge":
         return _validate_search(parsed)
@@ -248,12 +300,22 @@ def _validate_search(values: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _validate_delete_booking(values: dict[str, Any]) -> dict[str, Any]:
+    _reject_unknown_keys("delete_patient_booking", values, {"booking_id"})
+    booking_id = _require_string(
+        "delete_patient_booking", values.get("booking_id"), field="booking_id"
+    ).strip()
+    if not _BOOKING_ID_RE.fullmatch(booking_id):
+        raise ToolValidationError("delete_patient_booking.booking_id must look like B1001.")
+    return {"booking_id": booking_id}
+
+
 def _validate_draft_update(values: dict[str, Any]) -> dict[str, Any]:
-    allowed = {"doctor_id", "treatment_id", "local_date", "local_time", "notes"}
+    allowed = {"booking_id", "doctor_id", "treatment_id", "local_date", "local_time", "notes"}
     _reject_unknown_keys("update_booking_draft", values, allowed)
 
     normalized: dict[str, Any] = {}
-    for field in ("doctor_id", "treatment_id", "local_date", "local_time", "notes"):
+    for field in ("booking_id", "doctor_id", "treatment_id", "local_date", "local_time", "notes"):
         if field not in values:
             continue
         value = _optional_string("update_booking_draft", values[field], field=field)
@@ -267,6 +329,9 @@ def _validate_draft_update(values: dict[str, Any]) -> dict[str, Any]:
         value = normalized.get(field)
         if value is not None and not _ID_RE.fullmatch(value):
             raise ToolValidationError(f"update_booking_draft.{field} must look like D101 or T001.")
+    booking_id = normalized.get("booking_id")
+    if booking_id is not None and not _BOOKING_ID_RE.fullmatch(booking_id):
+        raise ToolValidationError("update_booking_draft.booking_id must look like B1001.")
     local_date = normalized.get("local_date")
     if local_date is not None and not _DATE_RE.fullmatch(local_date):
         raise ToolValidationError("update_booking_draft.local_date must be in YYYY-MM-DD format.")

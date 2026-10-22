@@ -37,8 +37,12 @@ Browser ── HTTPS ── Cloudflare Tunnel
   exact ID/name matches + BM25 + cosine, fused with reciprocal rank fusion.
 - **Frontend:** React + TypeScript + Vite, built to relative URLs so the runtime
   prefix is never baked into the image. The Assistant tab streams turns, keeps
-  saved conversations, renders safe markdown with `[doc:...]` citations, and
-  exposes a source inspector and tool trace using the vendored Triage system.
+  saved conversations, renders safe markdown (including tables) with
+  `[doc:...]` citations, suggests clinic-local appointment slots, exposes a
+  Confirm booking card, and preserves patient-reported symptoms in draft notes.
+  Booking rows support edit/delete, the demo can be reset, and an Explorer tab
+  shows the current session's model calls, tools, actions, tokens, and optional
+  cost estimates.
 - **Ingress:** Cloudflare Tunnel; the application handles the prefix itself.
   Wrong-prefix requests are `404`.
 

@@ -17,6 +17,7 @@ from app.api.deps import (
     resolve_session,
 )
 from app.contracts import PATIENT_ID
+from app.services.audit import AuditService
 from app.services.bookings import BookingService
 from app.services.errors import ServiceError
 
@@ -38,6 +39,28 @@ async def list_bookings(request: Request) -> Response:
     )
     views = await service.list_bookings(PATIENT_ID)
     return JSONResponse(jsonable_encoder(views), status_code=200)
+
+
+@router.delete("/api/bookings/{booking_id}")
+async def delete_booking(booking_id: str, request: Request) -> Response:
+    session = await resolve_session(request)
+    if session is None and not has_internal_key(request):
+        raise ServiceError("Authentication required.", code="unauthorized", status_code=401)
+    service = BookingService(
+        request.app.state.session_factory, get_clock(request), get_settings(request)
+    )
+    view = await service.delete_booking(booking_id, reason="Deleted from the workbench")
+    if session is not None:
+        await AuditService(request.app.state.session_factory, get_clock(request)).record(
+            demo_session_id=session.id,
+            conversation_id=None,
+            turn_id=None,
+            event_type="action",
+            name="booking_deleted",
+            status="ok",
+            payload={"booking": view.model_dump(mode="json")},
+        )
+    return JSONResponse(jsonable_encoder(view), status_code=200)
 
 
 @router.post("/api/bookings", dependencies=[Depends(require_internal_key)])

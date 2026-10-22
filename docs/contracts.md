@@ -105,6 +105,8 @@ occur:
 - `tool_end`: `{id, name, ok, summary, sources}`
 - `sources`: `{sources: [SourceRef]}`
 - `draft`: `{draft: BookingDraftView}`
+- `next_step`: the state-aware `NextStep` (`choose_slot`, `confirm_booking`,
+  `collect_details`, `confirm_action`, or `completed`)
 - `done`: the complete `ChatResponse`
 - `error`: `{code, message, retryable}`
 - `stopped`: the turn was cancelled
@@ -121,6 +123,20 @@ Body: `{"conversation_id": "...", "message_id": "<last user message id>"}`.
 Trims the last assistant reply, starts a fresh turn for the same user text, and
 returns the same SSE event stream. Confirmation turns and turns that already
 persist a booking are refused with `409`.
+
+### Booking actions
+
+- `DELETE /api/bookings/{booking_id}` hides a P001 booking from the active list
+  with a tombstone (`deleted_at`, `deleted_reason`). The row and its audit
+  history remain. Browser session or internal key allowed.
+- `POST /api/demo/reset` restores the P001 seed bookings (B1001, B1004), removes
+  application-created P001 bookings, clears all conversations/drafts, and keeps
+  audit events. It is browser-session only and requires CSRF/origin checks.
+- `GET /api/audit?limit=300` returns the current demo session's durable trace
+  events: model calls, tool calls, and actions, including usage, latency,
+  model IDs, and request/response payloads. Other sessions are never included.
+  The response also reports configured pricing rates; costs are estimates and
+  are unavailable until rates are configured.
 
 ### Conversation history
 
@@ -194,10 +210,13 @@ connection. Tables:
 
 `patient_bookings` is extended with `starts_at_utc`, `timezone`,
 `idempotency_key UNIQUE`, `request_hash` (canonical booking-details hash),
-`created_at`. Source date/time columns remain for faithful seeding and display.
+`created_at`, `deleted_at`, and `deleted_reason`. Source date/time columns remain
+for faithful seeding and display. Deletes are tombstones; active lists exclude
+them.
 
 `chat_turns` has `UNIQUE(conversation_id, client_message_id)` and stores
-`request_hash`, `status`, `response_json`, timestamps.
+`request_hash`, `status`, `response_json`, timestamps. `response_json` includes
+the turn's `NextStep` so saved conversations restore actionable cards.
 
 `booking_drafts` columns: `id`, `conversation_id`, `version`, `status`,
 `doctor_id`, `treatment_id`, `local_date`, `local_time`, `timezone`,
@@ -205,6 +224,10 @@ connection. Tables:
 `authorized_turn_id`, `booking_id`, timestamps. `BookingDraftView` exposes the
 presentation marker and `booking_id` so recovery can verify the exact presented
 version without trusting conversation text.
+
+`agent_events` is an append-only trace keyed by `demo_session_id`; it has no
+foreign key to conversations so reset/delete preserve the audit. It stores the
+event type, name, status, payload JSON, and timestamp.
 
 `conversations.messages_json` stores the provider conversation including
 assistant tool calls and matching tool results. Internal message IDs use the
@@ -219,7 +242,8 @@ Tools exposed to the model (narrow schemas, validated names only):
 ```text
 search_knowledge(query, filters?)
 get_patient_bookings()
-update_booking_draft(doctor_id?, treatment_id?, local_date?, local_time?, notes?)
+update_booking_draft(booking_id?, doctor_id?, treatment_id?, local_date?, local_time?, notes?)
+delete_patient_booking(booking_id)
 abandon_booking_draft()
 create_booking()
 ```
@@ -248,6 +272,17 @@ Confirmation rule (conservative, server-side):
   the saved record. Never claim a booking from generated text alone.
 - Draft changes increment `version`, validate, clear authorization, and return
   either missing fields or a canonical summary.
+- When a draft is missing a date or time, the server appends deterministic
+  clinic-local slot suggestions and returns `next_step=choose_slot`; it must not
+  ask for confirmation. A draft becomes confirmable only with a complete,
+  just-presented canonical summary. The UI's Confirm booking button sends the
+  same explicit confirmation accepted by the server.
+- `update_booking_draft` with `booking_id` starts an edit draft. Confirmation
+  updates that row instead of inserting a new booking. Deletion proposals always
+  require a separate confirmation turn; the row is tombstoned and the audit is
+  retained.
+- Patient-reported symptoms are captured into empty draft notes as
+  `Patient reports: <exact words>`; the model never diagnoses or infers severity.
 
 ## Retrieval
 
@@ -267,8 +302,10 @@ React + TypeScript + Vite, built to `frontend/dist`. The backend serves
 `index.html`, protected assets, and the JSON config element. The Assistant tab
 uses the vendored Triage chat system: a saved-conversation rail (sheet on
 phones), streamed turn status, one collapsed tool/source disclosure, safe
-markdown, `[doc:<record_id>]` citations that open a source inspector, copy,
-retry, regenerate, stop, and a draft card attached to the presenting turn.
+markdown (including GFM tables), `[doc:<record_id>]` citations that open a
+source inspector, copy, retry, regenerate, stop, a draft card attached to the
+presenting turn with slot suggestions and Confirm booking, booking edit/delete
+controls, a reset action, and an Agent Explorer tab for the current session.
 Required UI also includes login, booking summary, live bookings table, manual
 refresh, new conversation, and logout. On `booking_created` refetch bookings.
 On `401` return to login. No optimistic booking success, no raw HTML model

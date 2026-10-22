@@ -89,10 +89,10 @@ def booking_view_from_draft(draft: BookingDraftView) -> BookingView | None:
     )
 
 
-def booking_success_text(booking: BookingView) -> str:
+def booking_success_text(booking: BookingView, *, updated: bool = False) -> str:
     """Deterministic success text built only from the persisted record."""
     lines = [
-        "Booking confirmed.",
+        "Booking updated." if updated else "Booking confirmed.",
         f"- Booking ID: {booking.booking_id}",
         f"- Doctor: {booking.doctor_name} ({booking.doctor_id})",
         f"- Treatment: {booking.treatment_name} ({booking.treatment_id})",

@@ -15,7 +15,7 @@ from openai import (
     OpenAIError,
 )
 
-from app.contracts import ModelResponse, ModelToolCall, ProviderError
+from app.contracts import ModelResponse, ModelToolCall, ModelUsage, ProviderError
 from app.settings import Settings
 
 logger = logging.getLogger("clinicpilot.agent.model")
@@ -98,12 +98,27 @@ class DeepSeekModelClient:
         choice = _convert_tool_choice(tool_choice)
         request = self._request(sanitized, definitions, choice)
         request["stream"] = True
+        request["stream_options"] = {"include_usage": True}
 
         pending: dict[int, dict[str, str]] = {}
+        usage: ModelUsage | None = None
+        finish_reason: str | None = None
+        response_model: str | None = None
+        response_id: str | None = None
         try:
             stream = await self._client.chat.completions.create(**request)
             try:
                 async for chunk in stream:
+                    response_model = getattr(chunk, "model", None) or response_model
+                    response_id = getattr(chunk, "id", None) or response_id
+                    if getattr(chunk, "usage", None) is not None:
+                        usage = _usage(
+                            request["model"],
+                            response_id,
+                            response_model,
+                            chunk.usage,
+                            finish_reason,
+                        )
                     if not chunk.choices:
                         continue
                     choice_delta = chunk.choices[0]
@@ -125,6 +140,7 @@ class DeepSeekModelClient:
                             if function.arguments:
                                 entry["arguments"] += function.arguments
                     if choice_delta.finish_reason:
+                        finish_reason = choice_delta.finish_reason
                         yield {
                             "type": "done",
                             "finish_reason": choice_delta.finish_reason,
@@ -139,6 +155,17 @@ class DeepSeekModelClient:
                 type(exc).__name__,
             )
             raise ProviderError(PROVIDER_SAFE_ERROR) from None
+
+        if usage is None:
+            usage = ModelUsage(
+                model=request["model"],
+                response_model=response_model,
+                response_id=response_id,
+                finish_reason=finish_reason,
+            )
+        else:
+            usage.finish_reason = finish_reason
+        yield {"type": "usage", "usage": usage.model_dump(mode="json")}
 
         if pending:
             yield {
@@ -196,7 +223,17 @@ class DeepSeekModelClient:
                     arguments=call.function.arguments or "{}",
                 )
             )
-        return ModelResponse(content=message.content, tool_calls=calls)
+        return ModelResponse(
+            content=message.content,
+            tool_calls=calls,
+            usage=_usage(
+                request["model"],
+                getattr(response, "id", None),
+                getattr(response, "model", None),
+                getattr(response, "usage", None),
+                getattr(response.choices[0], "finish_reason", None),
+            ),
+        )
 
 
 def _sanitize_message(message: Mapping[str, Any]) -> dict[str, Any]:
@@ -270,3 +307,29 @@ def _is_retryable(exc: Exception) -> bool:
     if isinstance(exc, httpx.TransportError):
         return True
     return isinstance(exc, OpenAIError) and "timeout" in type(exc).__name__.lower()
+
+
+def _usage(
+    requested_model: str,
+    response_id: str | None,
+    response_model: str | None,
+    usage: Any,
+    finish_reason: str | None,
+) -> ModelUsage:
+    prompt_details = getattr(usage, "prompt_tokens_details", None) if usage else None
+    completion_details = getattr(usage, "completion_tokens_details", None) if usage else None
+    return ModelUsage(
+        model=requested_model,
+        response_model=response_model,
+        response_id=response_id,
+        prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0) if usage else 0,
+        completion_tokens=int(getattr(usage, "completion_tokens", 0) or 0) if usage else 0,
+        cached_tokens=int(getattr(prompt_details, "cached_tokens", 0) or 0)
+        if prompt_details
+        else 0,
+        reasoning_tokens=int(getattr(completion_details, "reasoning_tokens", 0) or 0)
+        if completion_details
+        else 0,
+        total_tokens=int(getattr(usage, "total_tokens", 0) or 0) if usage else 0,
+        finish_reason=finish_reason,
+    )

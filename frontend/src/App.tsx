@@ -5,13 +5,20 @@ import type { BookingView } from "./api/types";
 import { AppHeader } from "./components/AppHeader";
 import { BookingsPanel } from "./components/BookingsPanel";
 import { ChatPanel } from "./components/ChatPanel";
+import { ExplorerPanel } from "./components/ExplorerPanel";
 import { useAssistant } from "./hooks/useAssistant";
 import { readRuntimeConfig } from "./lib/config";
 
-type WorkbenchView = "chat" | "bookings";
+type WorkbenchView = "chat" | "bookings" | "explorer";
 
 function initialView(): WorkbenchView {
-  return window.location.hash === "#bookings-panel" ? "bookings" : "chat";
+  if (window.location.hash === "#bookings-panel") {
+    return "bookings";
+  }
+  if (window.location.hash === "#explorer-panel") {
+    return "explorer";
+  }
+  return "chat";
 }
 
 function describeError(error: unknown): string {
@@ -86,7 +93,12 @@ export function App() {
 
   const showView = useCallback((next: WorkbenchView) => {
     setView(next);
-    const hash = next === "bookings" ? "#bookings-panel" : "#chat-panel";
+    const hash =
+      next === "bookings"
+        ? "#bookings-panel"
+        : next === "explorer"
+          ? "#explorer-panel"
+          : "#chat-panel";
     window.history.replaceState(null, "", hash);
   }, []);
 
@@ -128,6 +140,17 @@ export function App() {
             }}
           >
             Bookings
+          </button>
+          <button
+            type="button"
+            className={view === "explorer" ? "nav-item active" : "nav-item"}
+            data-testid="nav-explorer"
+            aria-current={view === "explorer" ? "page" : undefined}
+            onClick={() => {
+              showView("explorer");
+            }}
+          >
+            Explorer
           </button>
         </nav>
         <div className="side-foot">
@@ -181,6 +204,20 @@ export function App() {
               >
                 Bookings
               </button>
+              <button
+                id="tab-explorer"
+                type="button"
+                className="tab"
+                role="tab"
+                aria-selected={view === "explorer"}
+                aria-controls="view-explorer"
+                data-testid="tab-explorer"
+                onClick={() => {
+                  showView("explorer");
+                }}
+              >
+                Explorer
+              </button>
             </div>
           </div>
 
@@ -208,6 +245,13 @@ export function App() {
                 onStop={assistant.stop}
                 onRetry={assistant.retry}
                 onRegenerate={assistant.regenerate}
+                onConfirm={assistant.confirmBooking}
+                onChooseSlot={assistant.chooseSlot}
+                onReset={() => {
+                  void assistant.resetWorkspace().catch((error: unknown) => {
+                    setBookingsError(describeError(error));
+                  });
+                }}
                 onNew={assistant.newConversation}
                 onLogout={() => {
                   void logout();
@@ -219,6 +263,20 @@ export function App() {
                   void assistant.deleteConversation(id);
                 }}
               />
+            ) : view === "explorer" ? (
+              <ExplorerPanel
+                onOpenConversation={(id) => {
+                  showView("chat");
+                  void assistant.selectConversation(id);
+                }}
+                onReset={async () => {
+                  try {
+                    await assistant.resetWorkspace();
+                  } catch (error) {
+                    setBookingsError(describeError(error));
+                  }
+                }}
+              />
             ) : (
               <BookingsPanel
                 bookings={bookings}
@@ -226,6 +284,25 @@ export function App() {
                 error={bookingsError}
                 onRefresh={() => {
                   void refreshBookings();
+                }}
+                onEdit={(booking) => {
+                  showView("chat");
+                  assistant.sendText(`Edit booking ${booking.booking_id}`);
+                }}
+                onDelete={async (booking) => {
+                  try {
+                    await api.deleteBooking(booking.booking_id);
+                    await refreshBookings();
+                  } catch (error) {
+                    setBookingsError(describeError(error));
+                  }
+                }}
+                onReset={async () => {
+                  try {
+                    await assistant.resetWorkspace();
+                  } catch (error) {
+                    setBookingsError(describeError(error));
+                  }
                 }}
               />
             )}

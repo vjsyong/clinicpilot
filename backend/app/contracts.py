@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -70,6 +70,7 @@ class BookingDraftView(BaseModel):
     notes: str | None = None
     missing_fields: list[str] = Field(default_factory=list)
     booking_id: str | None = None
+    editing_booking_id: str | None = None
     confirmation_message_id: str | None = None
     confirmation_version: int | None = None
 
@@ -94,6 +95,32 @@ class BookingView(BaseModel):
 class Event(BaseModel):
     type: str
     booking: BookingView | None = None
+    action_id: str | None = None
+    detail: str | None = None
+
+
+class SlotSuggestion(BaseModel):
+    local_date: str
+    local_time: str
+    timezone: str
+    label: str
+
+
+class NextStep(BaseModel):
+    kind: Literal[
+        "collect_details",
+        "choose_slot",
+        "confirm_booking",
+        "confirm_action",
+        "completed",
+    ]
+    missing_fields: list[str] = Field(default_factory=list)
+    suggestions: list[SlotSuggestion] = Field(default_factory=list)
+    draft_version: int | None = None
+    action_id: str | None = None
+    booking_id: str | None = None
+    action_booking: BookingView | None = None
+    message: str | None = None
 
 
 class ChatRequest(BaseModel):
@@ -110,6 +137,7 @@ class ChatResponse(BaseModel):
     sources: list[SourceRef] = Field(default_factory=list)
     booking_draft: BookingDraftView | None = None
     events: list[Event] = Field(default_factory=list)
+    next_step: NextStep | None = None
 
 
 class ConversationSummary(BaseModel):
@@ -142,6 +170,7 @@ class TranscriptTurn(BaseModel):
     booking_draft: BookingDraftView | None = None
     tools: list[ToolTrace] = Field(default_factory=list)
     events: list[Event] = Field(default_factory=list)
+    next_step: NextStep | None = None
 
 
 class ConversationTranscript(BaseModel):
@@ -171,6 +200,7 @@ class TurnResult(BaseModel):
     sources: list[SourceRef] = Field(default_factory=list)
     booking_draft: BookingDraftView | None = None
     events: list[Event] = Field(default_factory=list)
+    next_step: NextStep | None = None
 
 
 class ModelToolCall(BaseModel):
@@ -179,9 +209,23 @@ class ModelToolCall(BaseModel):
     arguments: str
 
 
+class ModelUsage(BaseModel):
+    model: str | None = None
+    response_model: str | None = None
+    response_id: str | None = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cached_tokens: int = 0
+    reasoning_tokens: int = 0
+    total_tokens: int = 0
+    finish_reason: str | None = None
+    latency_ms: int | None = None
+
+
 class ModelResponse(BaseModel):
     content: str | None = None
     tool_calls: list[ModelToolCall] = Field(default_factory=list)
+    usage: ModelUsage | None = None
 
 
 class ErrorDetail(BaseModel):
@@ -238,6 +282,8 @@ class BookingApi(Protocol):
 
     async def create_booking(self, draft_id: str, draft_version: int) -> BookingView: ...
 
+    async def delete_booking(self, booking_id: str) -> BookingView: ...
+
 
 class KnowledgeIndex(Protocol):
     def ready(self) -> bool: ...
@@ -269,6 +315,20 @@ class ModelClient(Protocol):
         tools: Sequence[dict[str, Any]],
         tool_choice: str | dict[str, Any] = "auto",
     ) -> ModelResponse: ...
+
+
+class AuditRecorder(Protocol):
+    async def record(
+        self,
+        *,
+        demo_session_id: int,
+        conversation_id: str | None,
+        turn_id: str | None,
+        event_type: str,
+        name: str,
+        status: str,
+        payload: dict[str, Any],
+    ) -> None: ...
 
 
 class AgentController(Protocol):

@@ -5,6 +5,7 @@ import type {
   BookingDraftView,
   ChatStreamEvent,
   ConversationSummary,
+  SlotSuggestion,
   SourceRef,
   ToolTrace,
 } from "../api/types";
@@ -13,6 +14,7 @@ import {
   createPendingMessage,
   markFailed,
   messagesFromTranscript,
+  slotPrompt,
   toRetry,
   type AssistantChatMessage,
   type ChatMessage,
@@ -307,6 +309,15 @@ export function useAssistant({ onBookingCreated }: UseAssistantOptions) {
         );
         return;
       }
+      if (event.event === "next_step") {
+        setMessages((current) =>
+          updateAssistant(current, messageId, (message) => ({
+            ...message,
+            nextStep: event.data.next_step,
+          })),
+        );
+        return;
+      }
       if (event.event === "done") {
         terminalRef.current = true;
         finishStreaming(messageId, (message) => ({
@@ -315,12 +326,20 @@ export function useAssistant({ onBookingCreated }: UseAssistantOptions) {
           sources: event.data.sources ?? [],
           draft: event.data.booking_draft ?? null,
           events: event.data.events ?? [],
+          nextStep: event.data.next_step ?? null,
           streaming: false,
           statusLabel: undefined,
           error: undefined,
         }));
         setDraft(event.data.booking_draft ?? null);
-        if ((event.data.events ?? []).some((item) => item.type === "booking_created")) {
+        if (
+          (event.data.events ?? []).some(
+            (item) =>
+              item.type === "booking_created" ||
+              item.type === "booking_updated" ||
+              item.type === "booking_deleted",
+          )
+        ) {
           bookingCallbackRef.current();
         }
         void refreshSessions();
@@ -388,6 +407,7 @@ export function useAssistant({ onBookingCreated }: UseAssistantOptions) {
             tools: [],
             draft: null,
             events: [],
+            nextStep: null,
             createdAt: new Date().toISOString(),
             streaming: true,
             statusLabel: "Thinking…",
@@ -561,6 +581,7 @@ export function useAssistant({ onBookingCreated }: UseAssistantOptions) {
           tools: [],
           draft: null,
           events: [],
+          nextStep: null,
           createdAt: new Date().toISOString(),
           streaming: true,
           statusLabel: "Regenerating…",
@@ -666,6 +687,17 @@ export function useAssistant({ onBookingCreated }: UseAssistantOptions) {
     sendText(input);
   }, [input, sendText]);
 
+  const confirmBooking = useCallback(() => {
+    sendText("yes");
+  }, [sendText]);
+
+  const chooseSlot = useCallback(
+    (slot: SlotSuggestion) => {
+      sendText(slotPrompt(slot));
+    },
+    [sendText],
+  );
+
   const retry = useCallback(() => {
     if (!failed || inFlightRef.current) {
       return;
@@ -768,6 +800,13 @@ export function useAssistant({ onBookingCreated }: UseAssistantOptions) {
     [newConversation],
   );
 
+  const resetWorkspace = useCallback(async () => {
+    await api.resetDemo();
+    newConversation();
+    await refreshSessions();
+    bookingCallbackRef.current();
+  }, [newConversation, refreshSessions]);
+
   return {
     sessions,
     activeId,
@@ -783,12 +822,15 @@ export function useAssistant({ onBookingCreated }: UseAssistantOptions) {
     setInput,
     send,
     sendText,
+    confirmBooking,
+    chooseSlot,
     regenerate,
     retry,
     stop,
     newConversation,
     selectConversation,
     deleteConversation,
+    resetWorkspace,
     refreshSessions,
   };
 }

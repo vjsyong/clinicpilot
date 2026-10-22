@@ -68,3 +68,35 @@ describe("Markdown", () => {
     expect(html).toContain("C001");
   });
 });
+
+describe("Markdown tables", () => {
+  it("renders a GFM table with cells and inline formatting", () => {
+    const html = renderToStaticMarkup(
+      <Markdown
+        text={
+          "| Date | Time | Doctor | Notes |\n" +
+          "| --- | --- | --- | --- |\n" +
+          "| 2026-11-05 | 09:00 | Dr. Sarah Jenkins | **Routine** checkup |\n" +
+          "| 2026-11-15 | 11:00 | Dr. James Wilson | Follow up on knee pain |"
+        }
+        sources={sources}
+      />,
+    );
+
+    expect(html).toContain('class="tablewrap"');
+    expect(html).toContain("<table");
+    expect(html).toContain("<th>Date</th>");
+    expect(html).toContain("<td>2026-11-05</td>");
+    expect(html).toContain("<b>Routine</b>");
+    expect(html).toContain("Follow up on knee pain");
+  });
+
+  it("keeps a pipe table usable when a cell contains an escaped pipe", () => {
+    const html = renderToStaticMarkup(
+      <Markdown text={"| A | B |\n| --- | --- |\n| x \\| y | z |"} />,
+    );
+
+    expect(html).toContain("<td>x | y</td>");
+    expect(html).toContain("<td>z</td>");
+  });
+});

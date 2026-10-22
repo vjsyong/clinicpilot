@@ -11,6 +11,7 @@ import inspect
 import json
 import logging
 import re
+import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -37,6 +38,7 @@ from app.agent.tools import (
 from app.clock import SystemClock
 from app.contracts import (
     PATIENT_ID,
+    AuditRecorder,
     BookingApi,
     BookingDraftView,
     BookingView,
@@ -49,12 +51,15 @@ from app.contracts import (
     ModelClient,
     ModelResponse,
     ModelToolCall,
+    ModelUsage,
+    NextStep,
     RetrievedDocument,
     SourceRef,
     TurnContext,
     TurnResult,
 )
 from app.services.booking_views import booking_success_text, booking_view_from_draft
+from app.services.slots import guidance_text, next_step_for_draft
 from app.services.tool_summary import result_sources, tool_summary
 from app.settings import Settings
 
@@ -80,9 +85,16 @@ NO_BOOKING_CREATED_MESSAGE = (
     "No booking was created. Your draft is still saved. To book, review the "
     'summary below and reply "yes".'
 )
+DELETE_FAILURE_MESSAGE = "I could not remove that booking. The active list was not changed."
 NO_BOOKING_CREATED_NO_DRAFT_MESSAGE = (
     "No booking was created. Tell me the doctor, treatment, date, and time you "
     "would like, and I can prepare the booking for your confirmation."
+)
+
+_SYMPTOM_PATTERN = re.compile(
+    r"\b(pain|painful|hurt|hurts|aching|ache|sore|rash|fever|cough|nausea|"
+    r"dizzy|swelling|swollen|migraine|headache|injur(?:y|ed))\b",
+    re.IGNORECASE,
 )
 
 _BOOKING_SUCCESS_CLAIM = re.compile(
@@ -100,6 +112,11 @@ _BOOKING_SUCCESS_CLAIM = re.compile(
     re.IGNORECASE,
 )
 
+_SUMMARY_REQUEST = re.compile(
+    r"\b(?:booking\s+summary|summary|review\s+(?:my|the)\s+booking|"
+    r"show\s+(?:my|the)\s+booking|current\s+booking)\b",
+    re.IGNORECASE,
+)
 _TRAILING_PUNCTUATION = re.compile(r"[.!?]+$")
 _WHITESPACE = re.compile(r"\s+")
 _CONFIRMATION_PHRASES = frozenset(
@@ -139,6 +156,7 @@ class AgentController:
         conversations: ConversationStore,
         booking_api: BookingApi,
         patient_context_loader: Callable[..., Any] | None = None,
+        audit: AuditRecorder | None = None,
     ) -> None:
         self._settings = settings
         self._clock = clock
@@ -148,13 +166,18 @@ class AgentController:
         self._conversations = conversations
         self._booking_api = booking_api
         self._patient_context_loader = patient_context_loader
+        self._audit = audit
         # ``None`` means this conversation's presented marker was explicitly
         # cleared, which prevents an in-process stale summary from authorizing.
         self._presented: dict[str, tuple[int, str] | None] = {}
+        self._pending_delete: dict[str, str] = {}
 
     async def handle_turn(self, ctx: TurnContext, emit: EventEmitter | None = None) -> TurnResult:
         await _emit(emit, "status", {"stage": "thinking"})
         messages = list(await self._conversations.load_messages(ctx.conversation_id))
+        pending_delete = self._pending_delete.pop(ctx.conversation_id, None)
+        if pending_delete is not None and is_confirmation_phrase(ctx.user_text):
+            return await self._delete_booking_turn(ctx, messages, pending_delete)
         draft = await self._drafts.get(ctx.conversation_id)
         last_assistant_id = await self._conversations.last_assistant_message_id(ctx.conversation_id)
         _last_id, last_assistant_content, last_presentation = _last_assistant(messages)
@@ -279,20 +302,35 @@ class AgentController:
         except Exception as exc:
             logger.warning("Could not mark draft booked (%s).", type(exc).__name__)
         await _emit(emit, "status", {"stage": "booked"})
+        await self._audit_record(
+            ctx,
+            "action",
+            "booking_updated" if authorized.editing_booking_id else "booking_created",
+            "ok",
+            {"booking": booking.model_dump(mode="json")},
+        )
 
         view = await self._current_draft(ctx.conversation_id)
         if view is None or view.status != DraftStatus.BOOKED.value:
             view = authorized.model_copy(update={"status": DraftStatus.BOOKED.value})
 
+        updated = authorized.editing_booking_id is not None
+        success_text = booking_success_text(booking, updated=updated)
         assistant_id = str(uuid.uuid4())
-        messages.append(_assistant_text_message(booking_success_text(booking), assistant_id))
+        messages.append(_assistant_text_message(success_text, assistant_id))
         await self._conversations.save_messages(ctx.conversation_id, messages, ctx.now)
         self._presented.pop(ctx.conversation_id, None)
         return TurnResult(
-            assistant_message=booking_success_text(booking),
+            assistant_message=success_text,
             sources=[],
             booking_draft=view,
-            events=[Event(type="booking_created", booking=booking)],
+            events=[
+                Event(
+                    type="booking_updated" if updated else "booking_created",
+                    booking=booking,
+                )
+            ],
+            next_step=next_step_for_draft(view, ctx.user_text, ctx.now),
         )
 
     async def _confirmation_model_call(
@@ -305,13 +343,41 @@ class AgentController:
             {"role": "system", "content": prompt},
             *_trim_messages(messages, self._settings.max_history_messages),
         ]
+        started = time.perf_counter()
         try:
-            return await self._model_client.complete(
+            response = await self._model_client.complete(
                 messages=request,
                 tools=tool_definitions([CONFIRMATION_TOOL]),
                 tool_choice="auto",
             )
+            await self._audit_record(
+                ctx,
+                "model_call",
+                "chat.completions.confirmation",
+                "ok",
+                {
+                    "model": response.usage.model if response.usage else None,
+                    "response_model": response.usage.response_model if response.usage else None,
+                    "response_id": response.usage.response_id if response.usage else None,
+                    "usage": response.usage.model_dump(mode="json") if response.usage else None,
+                    "latency_ms": int((time.perf_counter() - started) * 1000),
+                    "request_messages": request,
+                    "content": response.content,
+                    "tool_calls": [call.model_dump(mode="json") for call in response.tool_calls],
+                },
+            )
+            return response
         except Exception as exc:
+            await self._audit_record(
+                ctx,
+                "model_call",
+                "chat.completions.confirmation",
+                "error",
+                {
+                    "latency_ms": int((time.perf_counter() - started) * 1000),
+                    "error": type(exc).__name__,
+                },
+            )
             # The server has already authorized this exact draft. A provider
             # outage must not block a confirmed write; the deterministic answer
             # is built from the persisted record instead.
@@ -381,7 +447,8 @@ class AgentController:
             view = view.model_copy(
                 update={"status": DraftStatus.BOOKED.value, "booking_id": booking.booking_id}
             )
-        text = booking_success_text(booking)
+        updated = view.editing_booking_id is not None
+        text = booking_success_text(booking, updated=updated)
         assistant_id = str(uuid.uuid4())
         messages.append(_assistant_text_message(text, assistant_id))
         await self._conversations.save_messages(ctx.conversation_id, messages, ctx.now)
@@ -390,8 +457,91 @@ class AgentController:
             assistant_message=text,
             sources=[],
             booking_draft=view,
-            events=[Event(type="booking_created", booking=booking)],
+            events=[
+                Event(
+                    type="booking_updated" if updated else "booking_created",
+                    booking=booking,
+                )
+            ],
+            next_step=next_step_for_draft(view, ctx.user_text, ctx.now),
         )
+
+    async def _delete_booking_turn(
+        self,
+        ctx: TurnContext,
+        messages: list[dict[str, Any]],
+        booking_id: str,
+    ) -> TurnResult:
+        if not _already_appended(messages, ctx):
+            messages.append(
+                {
+                    "role": "user",
+                    "content": ctx.user_text,
+                    "_cp_message_id": ctx.turn_id,
+                }
+            )
+        try:
+            booking = await self._booking_api.delete_booking(booking_id)
+        except BookingApiError:
+            view = await self._current_draft(ctx.conversation_id)
+            return await self._finish_failure(ctx, messages, view, DELETE_FAILURE_MESSAGE)
+        except Exception as exc:
+            logger.warning("Booking delete failed (%s).", type(exc).__name__)
+            view = await self._current_draft(ctx.conversation_id)
+            return await self._finish_failure(ctx, messages, view, DELETE_FAILURE_MESSAGE)
+
+        view = await self._current_draft(ctx.conversation_id)
+        if view is not None and view.editing_booking_id == booking_id:
+            try:
+                await self._drafts.abandon(ctx.conversation_id)
+            except Exception as exc:
+                logger.warning("Could not cancel the deleted draft (%s).", type(exc).__name__)
+            view = await self._current_draft(ctx.conversation_id)
+        await self._audit_record(
+            ctx,
+            "action",
+            "booking_deleted",
+            "ok",
+            {"booking": booking.model_dump(mode="json")},
+        )
+        text = (
+            f"Booking {booking.booking_id} was removed from the active list. "
+            "Its audit record is retained."
+        )
+        assistant_id = str(uuid.uuid4())
+        messages.append(_assistant_text_message(text, assistant_id))
+        await self._conversations.save_messages(ctx.conversation_id, messages, ctx.now)
+        self._presented.pop(ctx.conversation_id, None)
+        return TurnResult(
+            assistant_message=text,
+            sources=[],
+            booking_draft=view,
+            events=[Event(type="booking_deleted", booking=booking)],
+            next_step=next_step_for_draft(view, ctx.user_text, ctx.now),
+        )
+
+    async def _audit_record(
+        self,
+        ctx: TurnContext,
+        event_type: str,
+        name: str,
+        status: str,
+        payload: dict[str, Any],
+    ) -> None:
+        if self._audit is None:
+            return
+        try:
+            await self._audit.record(
+                demo_session_id=int(ctx.demo_session_id),
+                conversation_id=ctx.conversation_id,
+                turn_id=ctx.turn_id,
+                event_type=event_type,
+                name=name,
+                status=status,
+                payload=payload,
+            )
+        except Exception as exc:  # pragma: no cover - audit must not break a turn
+            logger.warning("Audit write failed (%s).", type(exc).__name__)
 
     async def _invalidate_presentation(self, conversation_id: str) -> None:
         self._presented[conversation_id] = None
@@ -447,7 +597,42 @@ class AgentController:
             sources=[],
             booking_draft=view,
             events=[],
+            next_step=next_step_for_draft(view, ctx.user_text, ctx.now),
         )
+
+    async def _capture_visit_reason(
+        self,
+        ctx: TurnContext,
+        view: BookingDraftView | None,
+    ) -> BookingDraftView | None:
+        """Persist a patient-reported symptom when the model did not.
+
+        This records the patient's exact words as visit context; it does not
+        diagnose or infer severity. It only fills an empty notes field on an
+        active draft and never overwrites model-authored notes.
+        """
+        if (
+            view is None
+            or view.notes
+            or view.status
+            in {
+                DraftStatus.BOOKED.value,
+                DraftStatus.CANCELLED.value,
+            }
+        ):
+            return view
+        text = ctx.user_text.strip()
+        if not text or is_confirmation_phrase(text):
+            return view
+        if not _SYMPTOM_PATTERN.search(text):
+            return view
+        note = f"Patient reports: {text}"[:300].strip()
+        try:
+            update = await self._drafts.update(ctx.conversation_id, {"notes": note})
+            return update.draft or view
+        except Exception as exc:
+            logger.warning("Could not save visit reason (%s).", type(exc).__name__)
+            return view
 
     async def _normal_turn(
         self,
@@ -460,6 +645,8 @@ class AgentController:
         definitions = tool_definitions()
         sources: dict[tuple[str, str], SourceRef] = {}
         presentation: BookingDraftView | None = None
+        delete_proposal: BookingView | None = None
+        reset_proposal = False
         final_text = ""
 
         for _round in range(self._settings.max_tool_rounds):
@@ -467,7 +654,27 @@ class AgentController:
                 {"role": "system", "content": prompt},
                 *_trim_messages(messages, self._settings.max_history_messages),
             ]
+            started = time.perf_counter()
             response = await self._model_round(request, definitions, emit)
+            await self._audit_record(
+                ctx,
+                "model_call",
+                "chat.completions",
+                "ok",
+                {
+                    "model": response.usage.model if response.usage else None,
+                    "response_model": response.usage.response_model if response.usage else None,
+                    "response_id": response.usage.response_id if response.usage else None,
+                    "usage": response.usage.model_dump(mode="json") if response.usage else None,
+                    "latency_ms": int((time.perf_counter() - started) * 1000),
+                    "request_messages": request,
+                    "tools": [
+                        definition.get("function", {}).get("name") for definition in definitions
+                    ],
+                    "content": response.content,
+                    "tool_calls": [call.model_dump(mode="json") for call in response.tool_calls],
+                },
+            )
             calls = list(response.tool_calls)
             if not calls:
                 final_text = (response.content or "").strip()
@@ -487,8 +694,29 @@ class AgentController:
                         "args": _parse_tool_args(call.arguments),
                     },
                 )
+                tool_started = time.perf_counter()
                 outcome = await self._execute_tool(ctx, call, sources)
                 payload = dict(outcome.result.payload)
+                await self._audit_record(
+                    ctx,
+                    "tool_call",
+                    call.name,
+                    "error" if outcome.result.is_error else "ok",
+                    {
+                        "arguments": _parse_tool_args(call.arguments),
+                        "result": payload,
+                        "latency_ms": int((time.perf_counter() - tool_started) * 1000),
+                    },
+                )
+                if payload.get("action") == "reset":
+                    reset_proposal = True
+                if payload.get("confirmation_required") and isinstance(
+                    payload.get("booking"), dict
+                ):
+                    try:
+                        delete_proposal = BookingView.model_validate(payload["booking"])
+                    except ValueError:
+                        delete_proposal = None
                 await _emit(
                     emit,
                     "tool_end",
@@ -513,7 +741,50 @@ class AgentController:
                 )
 
         view = await self._current_draft(ctx.conversation_id)
+        view = await self._capture_visit_reason(ctx, view)
+        step = next_step_for_draft(view, ctx.user_text, ctx.now)
         presented_view = presentation
+        if reset_proposal:
+            step = NextStep(
+                kind="confirm_action",
+                action_id="reset",
+                message=(
+                    "Reset the shared demo workspace? This restores B1001 and B1004, "
+                    "clears active chats and drafts, and keeps the audit record."
+                ),
+            )
+            final_text = step.message or ""
+            presented_view = None
+        elif delete_proposal is not None:
+            step = NextStep(
+                kind="confirm_action",
+                action_id=delete_proposal.booking_id,
+                booking_id=delete_proposal.booking_id,
+                action_booking=delete_proposal,
+                message=_delete_question(delete_proposal),
+            )
+            final_text = _delete_question(delete_proposal)
+            presented_view = None
+
+        # An incomplete draft must never end in a premature confirmation
+        # request. Replace that prose with deterministic, state-aware guidance
+        # that includes concrete dated choices when they are available.
+        if (
+            step.kind == "confirm_booking"
+            and view is not None
+            and _SUMMARY_REQUEST.search(ctx.user_text)
+        ):
+            presented_view = view
+
+        if step.kind in {"choose_slot", "collect_details"}:
+            if not final_text or re.search(r"\b(yes|confirm)\b", final_text, re.IGNORECASE):
+                final_text = guidance_text(step)
+            elif (
+                step.kind == "choose_slot"
+                and step.suggestions
+                and not any(suggestion.label in final_text for suggestion in step.suggestions)
+            ):
+                final_text = f"{final_text}\n\n{guidance_text(step)}"
 
         # Generated prose must never assert a completed booking on its own. If
         # the model claims success in a turn where no booking was persisted,
@@ -528,6 +799,8 @@ class AgentController:
             )
             if existing_booking is not None:
                 final_text = booking_success_text(existing_booking)
+            elif step.kind in {"choose_slot", "collect_details"}:
+                final_text = f"No booking was created. {guidance_text(step)}"
             else:
                 final_text = (
                     NO_BOOKING_CREATED_MESSAGE
@@ -583,6 +856,7 @@ class AgentController:
                     logger.warning("Could not clear presentation (%s).", type(exc).__name__)
                 self._presented[ctx.conversation_id] = None
 
+        final_text = _humanize_field_names(final_text)
         messages.append(_assistant_text_message(final_text, assistant_id, presented_view))
         await self._conversations.save_messages(ctx.conversation_id, messages, ctx.now)
         await _emit(
@@ -592,11 +866,40 @@ class AgentController:
         )
         if view is not None:
             await _emit(emit, "draft", {"draft": view.model_dump(mode="json")})
+        if delete_proposal is None and not reset_proposal:
+            if (
+                view is not None
+                and view.status == DraftStatus.AWAITING_CONFIRMATION.value
+                and not view.missing_fields
+                and presented_view is not None
+            ):
+                step = NextStep(
+                    kind="confirm_booking",
+                    draft_version=view.version,
+                    message="Review the summary, then confirm or change a detail.",
+                )
+            else:
+                step = next_step_for_draft(view, ctx.user_text, ctx.now)
+                if step.kind == "confirm_booking":
+                    step = NextStep(
+                        kind="collect_details",
+                        missing_fields=[],
+                        message=(
+                            "The previous summary is no longer active. Ask me to show "
+                            "the current booking summary before confirming."
+                        ),
+                    )
+        await _emit(
+            emit,
+            "next_step",
+            {"next_step": step.model_dump(mode="json")},
+        )
         return TurnResult(
             assistant_message=final_text,
             sources=list(sources.values()),
             booking_draft=view,
             events=[],
+            next_step=step,
         )
 
     async def _model_round(
@@ -615,6 +918,7 @@ class AgentController:
 
         content: list[str] = []
         calls: list[ModelToolCall] = []
+        usage: ModelUsage | None = None
         async for event in stream(
             messages=request,
             tools=definitions,
@@ -634,7 +938,18 @@ class AgentController:
                 calls = [
                     call for call in event.get("calls") or [] if isinstance(call, ModelToolCall)
                 ]
-        return ModelResponse(content="".join(content) or None, tool_calls=calls)
+            elif kind == "usage":
+                raw = event.get("usage")
+                if isinstance(raw, dict):
+                    try:
+                        usage = ModelUsage.model_validate(raw)
+                    except ValueError:
+                        usage = None
+        return ModelResponse(
+            content="".join(content) or None,
+            tool_calls=calls,
+            usage=usage,
+        )
 
     async def _execute_tool(
         self,
@@ -653,8 +968,23 @@ class AgentController:
             return await self._list_bookings()
         if call.name == "update_booking_draft":
             return await self._update_draft(ctx, arguments)
+        if call.name == "delete_patient_booking":
+            return await self._propose_delete_booking(ctx, arguments)
         if call.name == "abandon_booking_draft":
             return await self._abandon_draft(ctx)
+        if call.name == "request_demo_reset":
+            return _ToolOutcome(
+                ToolResult.ok(
+                    {
+                        "confirmation_required": True,
+                        "action": "reset",
+                        "message": (
+                            "The UI must confirm the shared workspace reset. "
+                            "Chats and drafts are cleared; audit records are kept."
+                        ),
+                    }
+                )
+            )
         if call.name == "create_booking":
             return _ToolOutcome(
                 ToolResult.error(
@@ -778,6 +1108,44 @@ class AgentController:
             presentation_changed=True,
         )
 
+    async def _propose_delete_booking(
+        self,
+        ctx: TurnContext,
+        arguments: dict[str, Any],
+    ) -> _ToolOutcome:
+        booking_id = arguments["booking_id"]
+        try:
+            bookings = await self._booking_api.list_bookings(PATIENT_ID)
+        except Exception as exc:
+            logger.warning("Booking read failed for delete (%s).", type(exc).__name__)
+            return _ToolOutcome(
+                ToolResult.error(
+                    "The booking service could not be reached. No booking was removed.",
+                    code="booking_read_failed",
+                )
+            )
+        booking = next((item for item in bookings if item.booking_id == booking_id), None)
+        if booking is None:
+            return _ToolOutcome(
+                ToolResult.error(
+                    f"Booking {booking_id} is not in the active list.",
+                    code="booking_not_found",
+                )
+            )
+        self._pending_delete[ctx.conversation_id] = booking_id
+        return _ToolOutcome(
+            ToolResult.ok(
+                {
+                    "confirmation_required": True,
+                    "booking": booking.model_dump(mode="json"),
+                    "message": (
+                        f"Ask the patient to confirm deleting {booking_id}. "
+                        "Deletion hides it from the active list and retains the audit record."
+                    ),
+                }
+            )
+        )
+
     async def _abandon_draft(self, ctx: TurnContext) -> _ToolOutcome:
         try:
             await self._drafts.abandon(ctx.conversation_id)
@@ -832,6 +1200,7 @@ def build_controller(
     """
     from app.retrieval.index import build_knowledge_index
     from app.retrieval.patient_context import load_patient_context
+    from app.services.audit import AuditService
     from app.services.conversations import ConversationService
     from app.services.drafts import DraftService
 
@@ -850,6 +1219,7 @@ def build_controller(
         conversations=ConversationService(session_factory, active_clock),
         booking_api=RestBookingApi(settings),
         patient_context_loader=patient_context_loader,
+        audit=AuditService(session_factory, active_clock),
     )
 
 
@@ -989,6 +1359,29 @@ def _already_appended(messages: Sequence[dict[str, Any]], ctx: TurnContext) -> b
         last.get("role") == "user"
         and last.get("_cp_message_id") == ctx.turn_id
         and str(last.get("content") or "") == ctx.user_text
+    )
+
+
+_FIELD_LABELS = {
+    "local_date": "date",
+    "local_time": "time",
+    "doctor_id": "doctor",
+    "treatment_id": "treatment",
+    "timezone": "timezone",
+}
+
+
+def _humanize_field_names(text: str) -> str:
+    for field, label in _FIELD_LABELS.items():
+        text = text.replace(field, label)
+    return text
+
+
+def _delete_question(booking: BookingView) -> str:
+    return (
+        f"Delete booking {booking.booking_id} ({booking.local_date} at "
+        f"{booking.local_time}, {booking.doctor_name})? This hides it from the "
+        "active list and keeps the audit record. Reply yes or use Delete in Bookings."
     )
 
 

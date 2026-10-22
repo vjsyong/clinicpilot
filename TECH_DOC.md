@@ -149,12 +149,13 @@ duplicate write.
 
 ## 5. Agent and tools
 
-Five tools are exposed with strict JSON schemas:
+Six tools are exposed with strict JSON schemas:
 
 ```text
 search_knowledge(query, filters?)
 get_patient_bookings()
-update_booking_draft(doctor_id?, treatment_id?, local_date?, local_time?, notes?)
+update_booking_draft(booking_id?, doctor_id?, treatment_id?, local_date?, local_time?, notes?)
+delete_patient_booking(booking_id)
 abandon_booking_draft()
 create_booking()
 ```
@@ -171,6 +172,21 @@ Tool names and arguments are validated before execution. Trimming preserves
 assistant tool-call / tool-result pairing. The DeepSeek client uses
 `deepseek-flash` by default, non-thinking mode, temperature 0, and strips
 internal `_cp_*` message keys before sending.
+
+Booking UX is state-aware. An incomplete draft returns `next_step=choose_slot`
+with deterministic clinic-local suggestions; confirmation language is withheld
+until a complete summary is presented. The draft card exposes Confirm booking,
+and the server accepts the same explicit confirmation. `booking_id` starts an
+edit draft that updates the existing row on confirmation. Deletion is a
+tombstone: `delete_patient_booking` only proposes it, and a separate affirmative
+turn executes it. Patient-reported symptoms are stored in empty draft notes as
+`Patient reports: <exact words>` without diagnosis or inferred severity.
+
+Model calls, tool calls, and actions are written to `agent_events` with model
+IDs, usage (including cached/reasoning tokens), latency, request context, and
+results. The Explorer API is scoped to the authenticated demo session. Costs are
+estimates from optional `MODEL_*_PRICE_PER_MILLION_USD` settings; with rates at
+zero the UI shows tokens but no dollar estimate.
 
 If the model or provider fails after a confirmed write, the final answer is
 built from the persisted booking record. Generated success wording is replaced by
@@ -225,12 +241,16 @@ production prefix or secret is a build argument or build-time variable.
 The Assistant tab uses the vendored Triage chat system. It streams turns over
 SSE (`POST /api/chat/stream`), persists conversations per authenticated demo
 session, restores the active conversation on reload, and re-attaches to an
-in-flight run. The transcript renders safe markdown (never raw HTML), shows one
-collapsed tool/source disclosure, turns `[doc:<record_id>]` citations into a
-source inspector, and attaches the canonical draft to the presenting turn.
-Copy, retry, regenerate, and stop are available; the composer is docked on
-phones and the history rail becomes a sheet. Bookings refetch only after a
-`booking_created` event. A failed send retries with the same message ID.
+in-flight run. The transcript renders safe markdown including GFM tables (never
+raw HTML), shows one collapsed tool/source disclosure, turns
+`[doc:<record_id>]` citations into a source inspector, and attaches the canonical
+draft to the presenting turn. Incomplete drafts show selectable clinic-local
+slot suggestions; complete drafts show Confirm booking. Booking rows expose
+Edit, armed Delete, and the shared Reset demo action. The Explorer tab shows
+session-scoped model calls, tools, actions, messages, tokens, and optional cost
+estimates. Copy, retry, regenerate, and stop are available; the composer is
+docked on phones and the history rail becomes a sheet. Bookings refetch after
+booking created/updated/deleted. A failed send retries with the same message ID.
 Concurrent duplicate sends are prevented and `401` returns to login. The login
 page is server-rendered and uses only public design-system assets; application
 assets are served only to authenticated sessions.
@@ -289,7 +309,8 @@ Decisions:
 Limitations:
 
 - Shared password and single patient; no registration or multi-patient auth.
-- No cancellation, rescheduling, conflict detection, diagnosis, or prescribing.
+- No availability/conflict detection, diagnosis, or prescribing. Delete and
+  reschedule are explicit demo actions; delete is a tombstone, not hard removal.
 - In-process locks and SQLite do not scale horizontally; the MVP is one worker.
 - An in-flight turn is marked `in_progress` and a concurrent duplicate receives a
   retryable `409`. Startup recovery releases turns orphaned by a previous

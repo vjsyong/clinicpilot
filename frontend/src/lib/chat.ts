@@ -3,6 +3,8 @@ import type {
   ChatEvent,
   ChatRequest,
   ConversationTranscript,
+  NextStep,
+  SlotSuggestion,
   SourceRef,
   ToolTrace,
 } from "../api/types";
@@ -33,6 +35,7 @@ export interface AssistantChatMessage {
   tools: ToolTrace[];
   draft: BookingDraftView | null;
   events: ChatEvent[];
+  nextStep: NextStep | null;
   createdAt?: string;
   streaming?: boolean;
   statusLabel?: string;
@@ -128,6 +131,7 @@ export function messagesFromTranscript(transcript: ConversationTranscript): Chat
       tools: turn.tools,
       draft: turn.booking_draft ?? null,
       events: turn.events,
+      nextStep: turn.next_step ?? null,
       createdAt: turn.created_at,
       statusLabel: turn.status === "in_progress" ? "Still working..." : undefined,
       error:
@@ -137,4 +141,8 @@ export function messagesFromTranscript(transcript: ConversationTranscript): Chat
     });
   }
   return messages;
+}
+
+export function slotPrompt(slot: SlotSuggestion): string {
+  return `Please use ${slot.label} (${slot.local_date} at ${slot.local_time} ${slot.timezone}).`;
 }

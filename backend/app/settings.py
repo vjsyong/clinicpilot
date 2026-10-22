@@ -57,6 +57,12 @@ class Settings(BaseSettings):
     max_message_chars: int = Field(default=4000, ge=200, le=20000)
     max_history_messages: int = Field(default=40, ge=10, le=200)
     session_ttl_hours: int = Field(default=8, ge=1, le=72)
+    # Public DeepSeek rates are used only for an estimated Explorer cost. They
+    # are configurable because provider pricing can change.
+    model_input_price_per_million_usd: float = Field(default=0.28, ge=0)
+    model_output_price_per_million_usd: float = Field(default=0.42, ge=0)
+    model_cached_input_price_per_million_usd: float = Field(default=0.028, ge=0)
+    model_pricing_version: str = "deepseek-public-2025-09"
 
     @field_validator("demo_path_prefix")
     @classmethod

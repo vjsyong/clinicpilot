@@ -16,10 +16,12 @@ def test_exact_tool_surface() -> None:
         "search_knowledge",
         "get_patient_bookings",
         "update_booking_draft",
+        "delete_patient_booking",
+        "request_demo_reset",
         "abandon_booking_draft",
         "create_booking",
     }
-    assert len(tool_definitions()) == 5
+    assert len(tool_definitions()) == 7
     for name, schema in TOOL_SCHEMAS.items():
         assert schema["name"] == name
         assert schema["parameters"]["additionalProperties"] is False
@@ -91,3 +93,19 @@ def test_no_argument_tools_reject_extras() -> None:
         assert validate_tool_arguments(name, "") == {}
         with pytest.raises(ToolValidationError):
             validate_tool_arguments(name, '{"patient_id":"P002"}')
+
+
+def test_booking_edit_uses_a_booking_id_not_a_doctor_id() -> None:
+    assert validate_tool_arguments("update_booking_draft", '{"booking_id":"B1001"}') == {
+        "booking_id": "B1001"
+    }
+    with pytest.raises(ToolValidationError):
+        validate_tool_arguments("update_booking_draft", '{"booking_id":"D101"}')
+
+
+def test_delete_booking_requires_a_booking_id() -> None:
+    assert validate_tool_arguments("delete_patient_booking", '{"booking_id":"B1004"}') == {
+        "booking_id": "B1004"
+    }
+    with pytest.raises(ToolValidationError):
+        validate_tool_arguments("delete_patient_booking", '{"booking_id":"1004"}')

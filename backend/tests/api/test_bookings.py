@@ -228,3 +228,47 @@ def test_booking_survives_app_restart(harness: AppHarness, db: DBHarness) -> Non
         listed = asyncio.run(service.list_bookings())
         assert any(item.booking_id == booking_id for item in listed)
         assert session.get(PatientBooking, booking_id) is not None
+
+
+def test_delete_booking_hides_it_with_browser_session(harness: AppHarness, db: DBHarness) -> None:
+    token, _conversation, _draft = asyncio.run(_authorized_draft(harness))
+    harness.client.cookies.set("clinicpilot_session", token, path="/demo/")
+
+    response = harness.client.delete("/demo/api/bookings/B1001", headers=ORIGIN)
+    assert response.status_code == 200
+    assert response.json()["booking_id"] == "B1001"
+
+    listed = harness.client.get("/demo/api/bookings")
+    assert all(item["booking_id"] != "B1001" for item in listed.json())
+    with db.session_factory() as session:
+        row = session.get(PatientBooking, "B1001")
+        assert row is not None
+        assert row.deleted_at is not None
+
+
+def test_delete_booking_requires_authentication(harness: AppHarness) -> None:
+    response = harness.client.delete("/demo/api/bookings/B1001", headers=ORIGIN)
+    assert response.status_code == 401
+
+
+def test_reset_demo_restores_the_seed_workspace(harness: AppHarness, db: DBHarness) -> None:
+    token, _conversation, _draft = asyncio.run(_authorized_draft(harness))
+    harness.client.cookies.set("clinicpilot_session", token, path="/demo/")
+
+    response = harness.client.post("/demo/api/demo/reset", headers=ORIGIN)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["restored_bookings"] == ["B1001", "B1004"]
+    assert body["cleared_conversations"] >= 1
+    listed = harness.client.get("/demo/api/bookings").json()
+    assert [item["booking_id"] for item in listed] == ["B1001", "B1004"]
+    with db.session_factory() as session:
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(PatientBooking)
+                .where(PatientBooking.patient_id == PATIENT_ID)
+            )
+            == 2
+        )

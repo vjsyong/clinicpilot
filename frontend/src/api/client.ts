@@ -10,6 +10,8 @@ import type {
   ConversationTranscript,
   KnowledgeRecord,
   KnowledgeStatus,
+  AuditEnvelope,
+  ResetResult,
 } from "./types";
 
 export const API_PATHS = {
@@ -18,6 +20,7 @@ export const API_PATHS = {
   conversations: "./api/conversations",
   knowledge: "./api/knowledge",
   bookings: "./api/bookings",
+  demoReset: "./api/demo/reset",
   login: "./login",
   logout: "./logout",
 } as const;
@@ -195,6 +198,23 @@ export function createApiClient(options: ApiClientOptions = {}) {
         `${API_PATHS.knowledge}/${encodeURIComponent(sourceFile)}/${encodeURIComponent(recordId)}`,
         { method: "GET" },
       );
+    },
+
+    async deleteBooking(bookingId: string): Promise<BookingView> {
+      return requestJson<BookingView>(
+        `${API_PATHS.bookings}/${encodeURIComponent(bookingId)}`,
+        { method: "DELETE" },
+      );
+    },
+
+    async audit(limit = 300): Promise<AuditEnvelope> {
+      return requestJson<AuditEnvelope>(`./api/audit?limit=${limit}`, {
+        method: "GET",
+      });
+    },
+
+    async resetDemo(): Promise<ResetResult> {
+      return requestJson<ResetResult>(API_PATHS.demoReset, { method: "POST" });
     },
 
     async knowledgeStatus(): Promise<KnowledgeStatus> {

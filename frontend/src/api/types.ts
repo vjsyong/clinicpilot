@@ -21,6 +21,10 @@ export interface BookingDraftView {
   starts_at_utc?: string | null;
   notes?: string | null;
   missing_fields?: string[];
+  booking_id?: string | null;
+  editing_booking_id?: string | null;
+  confirmation_message_id?: string | null;
+  confirmation_version?: number | null;
 }
 
 export interface BookingView {
@@ -45,6 +49,29 @@ export interface ChatEvent {
   booking?: BookingView | null;
 }
 
+export interface SlotSuggestion {
+  local_date: string;
+  local_time: string;
+  timezone: string;
+  label: string;
+}
+
+export interface NextStep {
+  kind:
+    | "collect_details"
+    | "choose_slot"
+    | "confirm_booking"
+    | "confirm_action"
+    | "completed";
+  missing_fields: string[];
+  suggestions: SlotSuggestion[];
+  draft_version?: number | null;
+  action_id?: string | null;
+  booking_id?: string | null;
+  action_booking?: BookingView | null;
+  message?: string | null;
+}
+
 export interface ChatResponse {
   conversation_id: string;
   message_id: string;
@@ -52,6 +79,7 @@ export interface ChatResponse {
   sources?: SourceRef[];
   booking_draft?: BookingDraftView | null;
   events?: ChatEvent[];
+  next_step?: NextStep | null;
 }
 
 export interface ChatRequest {
@@ -105,6 +133,7 @@ export interface TranscriptTurn {
   booking_draft?: BookingDraftView | null;
   tools: ToolTrace[];
   events: ChatEvent[];
+  next_step?: NextStep | null;
 }
 
 export interface ConversationTranscript {
@@ -160,6 +189,36 @@ export type ChatStreamEvent =
     }
   | { event: "sources"; data: { sources: SourceRef[] } }
   | { event: "draft"; data: { draft: BookingDraftView } }
+  | { event: "next_step"; data: { next_step: NextStep } }
   | { event: "done"; data: ChatResponse }
   | { event: "error"; data: ChatStreamError }
   | { event: "stopped"; data: Record<string, never> };
+
+export interface ResetResult {
+  restored_bookings: string[];
+  removed_bookings: number;
+  cleared_conversations: number;
+}
+
+export interface AuditEvent {
+  id: string;
+  conversation_id: string | null;
+  turn_id: string | null;
+  event_type: string;
+  name: string;
+  status: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface AuditPricing {
+  input_per_million_usd: number;
+  output_per_million_usd: number;
+  cached_input_per_million_usd: number;
+  version: string;
+}
+
+export interface AuditEnvelope {
+  events: AuditEvent[];
+  pricing: AuditPricing;
+}

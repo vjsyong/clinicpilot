@@ -18,7 +18,14 @@ from app.contracts import (
     DraftStatus,
     DraftUpdate,
 )
-from app.db.models import BookingDraft, Clinic, Conversation, Doctor, Treatment
+from app.db.models import (
+    BookingDraft,
+    Clinic,
+    Conversation,
+    Doctor,
+    PatientBooking,
+    Treatment,
+)
 from app.services.catalog import (
     LocalTimeError,
     clinic_timezone,
@@ -75,6 +82,8 @@ class DraftService:
                 raise NotFoundError("Conversation not found.")
 
             draft = _latest_active_draft(session, conversation_id)
+            changes = dict(changes)
+            editing_booking_id = changes.pop("booking_id", None)
             unknown = sorted(set(changes) - _ALLOWED_FIELDS)
             if unknown:
                 return DraftUpdate(
@@ -84,7 +93,40 @@ class DraftService:
                     errors=[f"Unsupported draft field: {field}" for field in unknown],
                 )
 
+            booking: PatientBooking | None = None
+            if editing_booking_id is not None:
+                if draft is not None and draft.editing_booking_id not in {
+                    None,
+                    editing_booking_id,
+                }:
+                    return DraftUpdate(
+                        draft=draft_view(session, draft),
+                        missing_fields=_missing(draft),
+                        changed=False,
+                        errors=[
+                            "Another booking is already being edited. "
+                            "Finish or cancel that draft first."
+                        ],
+                    )
+                booking = session.get(PatientBooking, editing_booking_id)
+                if booking is None or booking.deleted_at is not None:
+                    return DraftUpdate(
+                        draft=draft_view(session, draft) if draft is not None else None,
+                        missing_fields=_missing(draft),
+                        changed=False,
+                        errors=["That booking no longer exists."],
+                    )
+
             candidate = _candidate(draft)
+            if draft is None and booking is not None:
+                candidate = {
+                    "doctor_id": booking.doctor_id,
+                    "treatment_id": booking.treatment_id,
+                    "local_date": booking.booking_date.isoformat(),
+                    "local_time": booking.booking_time.strftime("%H:%M"),
+                    "timezone": booking.timezone,
+                    "notes": booking.notes,
+                }
             for field in _ALLOWED_FIELDS:
                 if field in changes:
                     candidate[field] = _normalize(field, changes[field])
@@ -132,11 +174,14 @@ class DraftService:
                     conversation_id=conversation_id,
                     version=1,
                     status=status,
+                    editing_booking_id=editing_booking_id,
                     created_at=now,
                     updated_at=now,
                 )
                 session.add(draft)
             else:
+                if editing_booking_id is not None and draft.editing_booking_id is None:
+                    draft.editing_booking_id = editing_booking_id
                 draft.version += 1
                 draft.status = status
                 draft.updated_at = now
@@ -488,6 +533,7 @@ def draft_view(session: Session, draft: BookingDraft) -> BookingDraftView:
         notes=draft.notes,
         missing_fields=_missing(draft),
         booking_id=draft.booking_id,
+        editing_booking_id=draft.editing_booking_id,
         confirmation_message_id=draft.confirmation_message_id,
         confirmation_version=draft.confirmation_version,
     )

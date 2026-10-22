@@ -1,6 +1,11 @@
 import { useState } from "react";
 
-import type { BookingView, SourceRef } from "../api/types";
+import type {
+  BookingDraftView,
+  BookingView,
+  SlotSuggestion,
+  SourceRef,
+} from "../api/types";
 import type { AssistantChatMessage, UserChatMessage } from "../lib/chat";
 import { sourceLabel, sourceKey } from "../lib/sources";
 import { BookingDraftCard } from "./BookingDraftCard";
@@ -9,7 +14,12 @@ import { ToolTrace } from "./ToolTrace";
 
 interface ChatMessageProps {
   message: UserChatMessage | AssistantChatMessage;
+  currentDraft: BookingDraftView | null;
+  inFlight: boolean;
   onSource: (source: SourceRef) => void;
+  onConfirm?: () => void;
+  onChooseSlot?: (slot: SlotSuggestion) => void;
+  onReset?: () => void;
   onRegenerate?: (message: AssistantChatMessage) => void;
 }
 
@@ -74,16 +84,111 @@ function SourceList({
   );
 }
 
-function BookingSuccess({ booking }: { booking: BookingView }) {
+function BookingSuccess({
+  booking,
+  updated,
+}: {
+  booking: BookingView;
+  updated: boolean;
+}) {
   return (
     <div className="msg ok" role="status" data-testid="booking-success">
-      <b>Booking confirmed.</b> {booking.booking_id} · {booking.local_date} at{" "}
-      {booking.local_time} ({booking.timezone})
+      <b>{updated ? "Booking updated." : "Booking confirmed."}</b> {booking.booking_id} ·{" "}
+      {booking.local_date} at {booking.local_time} ({booking.timezone})
     </div>
   );
 }
 
-export function ChatMessageView({ message, onSource, onRegenerate }: ChatMessageProps) {
+function ConfirmActionCard({
+  message,
+  inFlight,
+  onConfirm,
+  onReset,
+}: {
+  message: AssistantChatMessage;
+  inFlight: boolean;
+  onConfirm?: () => void;
+  onReset?: () => void;
+}) {
+  const step = message.nextStep;
+  if (!step || step.kind !== "confirm_action") {
+    return null;
+  }
+  if (step.action_id === "reset") {
+    return (
+      <div className="proposal" data-testid="confirm-action">
+        <div className="p-tag">Confirm action</div>
+        <div className="spread">
+          <b>Reset shared demo workspace</b>
+          <span className="badge warn">needs confirmation</span>
+        </div>
+        <p className="sub">
+          Restores B1001 and B1004, clears active chats and drafts, and keeps the
+          audit record. This affects every visitor.
+        </p>
+        <div className="row">
+          <button
+            type="button"
+            className="btn danger"
+            data-testid="confirm-reset-demo"
+            disabled={inFlight || !onReset}
+            onClick={onReset}
+          >
+            Reset demo
+          </button>
+        </div>
+      </div>
+    );
+  }
+  const booking = step.action_booking;
+  if (!booking) {
+    return null;
+  }
+  return (
+    <div className="proposal" data-testid="confirm-action">
+      <div className="p-tag">Confirm action</div>
+      <div className="spread">
+        <b>Delete booking {booking.booking_id}</b>
+        <span className="badge warn">needs confirmation</span>
+      </div>
+      <div className="kv">
+        <span className="k">Doctor</span>
+        <span>{booking.doctor_name}</span>
+        <span className="k">Treatment</span>
+        <span>{booking.treatment_name}</span>
+        <span className="k">Appointment</span>
+        <span>
+          {booking.local_date} at {booking.local_time} ({booking.timezone})
+        </span>
+      </div>
+      <p className="sub">
+        This hides the booking from the active list. The audit record is retained.
+      </p>
+      <div className="row">
+        <button
+          type="button"
+          className="btn danger"
+          data-testid="confirm-delete-booking"
+          disabled={inFlight || !onConfirm}
+          onClick={onConfirm}
+        >
+          Delete booking
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export function ChatMessageView({
+  message,
+  currentDraft,
+  inFlight,
+  onSource,
+  onConfirm,
+  onChooseSlot,
+  onReset,
+  onRegenerate,
+}: ChatMessageProps) {
   const [copied, setCopied] = useState(false);
 
   if (message.kind === "user") {
@@ -103,9 +208,12 @@ export function ChatMessageView({ message, onSource, onRegenerate }: ChatMessage
     );
   }
 
-  const booking = message.events.find(
-    (event) => event.type === "booking_created" && event.booking,
-  )?.booking;
+  const bookingEvent = message.events.find(
+    (event) =>
+      (event.type === "booking_created" || event.type === "booking_updated") &&
+      event.booking,
+  );
+  const booking = bookingEvent?.booking;
   const citedSources = message.sources.filter((source) =>
     message.text.includes(`[doc:${source.record_id}]`),
   );
@@ -177,8 +285,23 @@ export function ChatMessageView({ message, onSource, onRegenerate }: ChatMessage
           </div>
         ) : null}
         {message.stopped ? <div className="msg warn">Stopped.</div> : null}
-        {booking ? <BookingSuccess booking={booking} /> : null}
-        {message.draft && !booking ? <BookingDraftCard draft={message.draft} /> : null}
+        {booking ? <BookingSuccess booking={booking} updated={bookingEvent?.type === "booking_updated"} /> : null}
+        <ConfirmActionCard
+          message={message}
+          inFlight={inFlight}
+          onConfirm={onConfirm}
+          onReset={onReset}
+        />
+        {message.draft && !booking ? (
+          <BookingDraftCard
+            draft={message.draft}
+            nextStep={message.nextStep}
+            currentDraft={currentDraft}
+            inFlight={inFlight}
+            onConfirm={onConfirm}
+            onChooseSlot={onChooseSlot}
+          />
+        ) : null}
       </div>
     </div>
   );

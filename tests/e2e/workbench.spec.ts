@@ -282,6 +282,125 @@ test('prefix routing and unauthenticated API guards', async ({ request }) => {
   );
 });
 
+test('incomplete draft suggests dated slots and keeps the pain note through confirmation', async ({ page }) => {
+  await login(page);
+  await page.getByTestId('new-conversation').first().click();
+
+  const first = await sendMessage(page, 'My knee hurts');
+  expect(first.status).toBe(200);
+  const assistant = page.getByTestId('message-assistant').last();
+  await expect(assistant).toContainText('Suggested clinic-local times');
+  await expect(assistant.getByTestId('confirm-booking')).toHaveCount(0);
+  await expect(assistant.getByTestId('booking-draft')).toContainText(
+    'Patient reports: My knee hurts',
+  );
+
+  const slot = assistant.locator('.chip').first();
+  await expect(slot).toBeVisible();
+  await slot.click();
+
+  const summary = page.getByTestId('message-assistant').last();
+  await expect(summary).toContainText('Booking summary');
+  await expect(summary.getByTestId('confirm-booking')).toBeVisible();
+  await summary.getByTestId('confirm-booking').click();
+
+  const confirmed = page.getByTestId('message-assistant').last();
+  await expect(confirmed).toContainText('Booking confirmed.', { timeout: 30_000 });
+  await expect(confirmed).toContainText('Patient reports: My knee hurts');
+
+  await page.getByTestId('nav-explorer').click();
+  await expect(page.getByTestId('audit-event').first()).toBeVisible();
+  await expect(page.locator('#explorer-panel')).toContainText('chat.completions');
+  await expect(page.locator('#explorer-panel')).toContainText('search_knowledge');
+});
+
+test('editing a booking reuses the booking and delete/reset controls work', async ({ page }) => {
+  await login(page);
+  await page.getByTestId('nav-bookings').click();
+  const before = await bookingRows(page).count();
+  const b1001 = page.getByTestId('booking-row').filter({ hasText: 'B1001' });
+  await expect(b1001).toBeVisible();
+
+  await b1001.getByTestId('edit-booking').click();
+  await expect(page.getByTestId('chat-input')).toBeVisible();
+  const editSummary = page.getByTestId('message-assistant').last();
+  await expect(editSummary).toContainText('Booking summary');
+  await expect(editSummary.getByTestId('confirm-booking')).toBeVisible();
+  await editSummary.getByTestId('confirm-booking').click();
+  await expect(page.getByTestId('message-assistant').last()).toContainText(
+    'Booking updated.',
+    { timeout: 30_000 },
+  );
+
+  await page.getByTestId('nav-bookings').click();
+  await expect(page.getByTestId('booking-row')).toHaveCount(before);
+  await expect(
+    page.getByTestId('booking-row').filter({ hasText: 'B1001' }),
+  ).toBeVisible();
+
+  const b1004 = page.getByTestId('booking-row').filter({ hasText: 'B1004' });
+  await b1004.getByTestId('delete-booking').click();
+  await b1004.getByTestId('delete-booking').click();
+  await expect(b1004).toHaveCount(0);
+  await page.waitForTimeout(500);
+
+  page.once('dialog', (dialog) => {
+    void dialog.accept();
+  });
+  await page.getByTestId('reset-demo').click();
+  await expect(page.getByTestId('booking-row')).toHaveCount(2);
+  await expect(
+    page.getByTestId('booking-row').filter({ hasText: 'B1004' }),
+  ).toBeVisible();
+});
+
+test('agent delete requires the confirmation card and retains the audit', async ({ page }) => {
+  await login(page);
+  await page.getByTestId('nav-bookings').click();
+  page.once('dialog', (dialog) => {
+    void dialog.accept();
+  });
+  await page.getByTestId('reset-demo').click();
+  await expect(page.getByTestId('booking-row')).toHaveCount(2);
+  await page.getByTestId('nav-chat').click();
+  await page.getByTestId('new-conversation').first().click();
+  await sendMessage(page, 'Delete booking B1004');
+
+  const assistant = page.getByTestId('message-assistant').last();
+  await expect(assistant.getByTestId('confirm-action')).toBeVisible();
+  await expect(assistant).toContainText('keeps the audit record');
+  await assistant.getByTestId('confirm-delete-booking').click();
+  await expect(page.getByTestId('message-assistant').last()).toContainText(
+    'removed from the active list',
+    { timeout: 30_000 },
+  );
+
+  await page.getByTestId('nav-bookings').click();
+  await expect(
+    page.getByTestId('booking-row').filter({ hasText: 'B1004' }),
+  ).toHaveCount(0);
+
+  page.once('dialog', (dialog) => {
+    void dialog.accept();
+  });
+  await page.getByTestId('reset-demo').click();
+  await expect(page.getByTestId('booking-row')).toHaveCount(2);
+});
+
+test('agent reset uses the confirmation card and clears chats', async ({ page }) => {
+  await login(page);
+  await page.getByTestId('new-conversation').first().click();
+  await sendMessage(page, 'Reset the demo');
+
+  const assistant = page.getByTestId('message-assistant').last();
+  await expect(assistant.getByTestId('confirm-action')).toBeVisible();
+  await assistant.getByTestId('confirm-reset-demo').click();
+  await expect(page.getByTestId('message-assistant')).toHaveCount(0);
+
+  await page.getByTestId('nav-bookings').click();
+  await expect(page.getByTestId('booking-row')).toHaveCount(2);
+});
+
 test('login, draft, confirmation and bookings table update', async ({ page }) => {
   await login(page);
 

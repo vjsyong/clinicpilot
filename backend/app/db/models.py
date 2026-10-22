@@ -139,6 +139,8 @@ class PatientBooking(Base):
     timezone: Mapped[str] = mapped_column(String(64), nullable=False)
     idempotency_key: Mapped[str | None] = mapped_column(String(200), nullable=True, unique=True)
     request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    deleted_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
@@ -210,8 +212,23 @@ class BookingDraft(Base):
     confirmation_message_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     confirmation_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     authorized_turn_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    editing_booking_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
     booking_id: Mapped[str | None] = mapped_column(
         String(16), ForeignKey("patient_bookings.booking_id"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class AgentEvent(Base):
+    __tablename__ = "agent_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    demo_session_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    conversation_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    turn_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)

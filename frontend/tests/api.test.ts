@@ -59,6 +59,7 @@ describe("API client", () => {
       conversations: "./api/conversations",
       knowledge: "./api/knowledge",
       bookings: "./api/bookings",
+      demoReset: "./api/demo/reset",
       login: "./login",
       logout: "./logout",
     });

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time
 from typing import Any
 
 import pytest
@@ -641,3 +641,116 @@ async def test_prepare_regeneration_refuses_to_drop_a_presented_summary(
 
     with pytest.raises(ServiceError):
         await conversations.prepare_regeneration(conversation_id, "m-summary")
+
+
+@pytest.mark.asyncio
+async def test_editing_a_booking_reuses_the_existing_row(
+    db: DBHarness, frozen_clock: FrozenClock
+) -> None:
+    from app.services.drafts import DraftService
+
+    _session, conversation_id = await _new_conversation(db, frozen_clock)
+    drafts = DraftService(db.session_factory, frozen_clock, db.settings)
+    bookings = _bookings(db, frozen_clock)
+
+    update = await drafts.update(
+        conversation_id,
+        {
+            "booking_id": "B1001",
+            "doctor_id": "D104",
+            "treatment_id": "T005",
+            "local_date": "2026-11-20",
+            "local_time": "11:00",
+            "notes": "Knee pain follow-up.",
+        },
+    )
+    assert update.draft is not None
+    assert update.draft.editing_booking_id == "B1001"
+    assert update.draft.status == DraftStatus.AWAITING_CONFIRMATION.value
+    await drafts.mark_presented(conversation_id, "assistant-edit", update.draft.version)
+    await drafts.authorize(conversation_id, "turn-edit")
+
+    key = f"booking:{update.draft.draft_id}:v{update.draft.version}"
+    view, created = await bookings.create_from_draft(
+        update.draft.draft_id, update.draft.version, key
+    )
+
+    assert created is False
+    assert view.booking_id == "B1001"
+    assert view.doctor_id == "D104"
+    assert view.treatment_id == "T005"
+    assert view.local_date == "2026-11-20"
+    assert view.notes == "Knee pain follow-up."
+
+    listed = await bookings.list_bookings()
+    matching = [item for item in listed if item.booking_id == "B1001"]
+    assert len(matching) == 1
+    assert matching[0].doctor_id == "D104"
+    assert matching[0].notes == "Knee pain follow-up."
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_booking_hides_it_but_keeps_the_row(
+    db: DBHarness, frozen_clock: FrozenClock
+) -> None:
+    from app.db.models import PatientBooking
+
+    bookings = _bookings(db, frozen_clock)
+
+    deleted = await bookings.delete_booking("B1001", reason="test cleanup")
+    assert deleted.booking_id == "B1001"
+
+    listed = await bookings.list_bookings()
+    assert all(item.booking_id != "B1001" for item in listed)
+    with db.session_factory() as session:
+        row = session.get(PatientBooking, "B1001")
+        assert row is not None
+        assert row.deleted_at is not None
+        assert row.deleted_reason == "test cleanup"
+
+    again = await bookings.delete_booking("B1001", reason="repeated")
+    assert again.booking_id == "B1001"
+
+
+@pytest.mark.asyncio
+async def test_workspace_reset_restores_seed_bookings_and_clears_chats(
+    db: DBHarness, frozen_clock: FrozenClock
+) -> None:
+    from app.db.models import Conversation, PatientBooking
+    from app.services.workspace import WorkspaceService
+
+    _session, _conversation_id = await _new_conversation(db, frozen_clock)
+    bookings = _bookings(db, frozen_clock)
+    await bookings.delete_booking("B1001", reason="before reset")
+    with db.session_factory() as session:
+        session.add(
+            PatientBooking(
+                booking_id="B9999",
+                patient_id=PATIENT_ID,
+                doctor_id="D101",
+                treatment_id="T001",
+                booking_date=date(2026, 12, 1),
+                booking_time=time(9, 0),
+                status="Confirmed",
+                notes="temporary",
+                starts_at_utc=frozen_clock.now(),
+                timezone="America/New_York",
+                idempotency_key="booking:temporary:v1",
+                request_hash="hash",
+                created_at=frozen_clock.now(),
+            )
+        )
+        session.commit()
+
+    result = await WorkspaceService(db.session_factory, frozen_clock, db.settings).reset()
+
+    assert result.restored_bookings == ["B1001", "B1004"]
+    assert result.removed_bookings == 1
+    with db.session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(Conversation)) == 0
+        assert session.get(PatientBooking, "B9999") is None
+        restored = session.get(PatientBooking, "B1001")
+        assert restored is not None
+        assert restored.deleted_at is None
+        assert restored.idempotency_key is None
+        assert session.get(PatientBooking, "B1004") is not None

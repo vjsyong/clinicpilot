@@ -118,6 +118,15 @@ button.nav-item {
   margin-inline-start: auto;
 }
 
+.assistant-page .md .tablewrap {
+  margin-block: var(--space-8);
+}
+
+.assistant-page .md .tbl th,
+.assistant-page .md .tbl td {
+  white-space: normal;
+}
+
 .assistant-page .source-ref {
   background: none;
   border: 0;
@@ -222,4 +231,31 @@ button.nav-item {
     border-top: 1px solid var(--border-default);
     background: var(--surface-card);
   }
+}
+
+.explorer-summary {
+  margin-block: var(--space-12);
+}
+
+.explorer-filter {
+  align-items: center;
+  gap: var(--space-8);
+  margin-block: var(--space-10);
+}
+
+#explorer-panel .tbl .mono {
+  white-space: nowrap;
+}
+
+.explorer-json {
+  max-block-size: 320px;
+  max-inline-size: 640px;
+  overflow: auto;
+  margin: var(--space-6) 0 0;
+  padding: var(--space-8);
+  background: var(--surface-subtle);
+  color: var(--text-primary);
+  font-size: var(--fs-kbd);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }

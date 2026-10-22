@@ -46,6 +46,7 @@ async def execute_turn(
             sources=result.sources,
             booking_draft=result.booking_draft,
             events=result.events,
+            next_step=result.next_step,
         )
         await conversations.finish_turn(turn_id, response)
         return response

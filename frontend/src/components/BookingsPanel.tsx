@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+
 import type { BookingView } from "../api/types";
 import { bookingSlot, temporalLabel } from "../lib/bookings";
 
@@ -6,6 +8,9 @@ interface BookingsPanelProps {
   loading: boolean;
   error: string | null;
   onRefresh: () => void;
+  onEdit: (booking: BookingView) => void;
+  onDelete: (booking: BookingView) => Promise<void> | void;
+  onReset: () => Promise<void> | void;
 }
 
 function toneFor(booking: BookingView): string {
@@ -35,7 +40,53 @@ export function BookingsPanel({
   loading,
   error,
   onRefresh,
+  onEdit,
+  onDelete,
+  onReset,
 }: BookingsPanelProps) {
+  const [armedDelete, setArmedDelete] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [resetting, setResetting] = useState(false);
+
+  useEffect(() => {
+    if (armedDelete === null) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setArmedDelete(null);
+    }, 4000);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [armedDelete]);
+
+  async function deleteBooking(booking: BookingView) {
+    setDeleting(booking.booking_id);
+    try {
+      await onDelete(booking);
+      setArmedDelete(null);
+    } finally {
+      setDeleting(null);
+    }
+  }
+
+  async function resetDemo() {
+    const confirmed = window.confirm(
+      "Reset the shared demo? This restores P001's seed bookings B1001 and B1004, " +
+        "clears all active chats and drafts, and keeps the audit record. " +
+        "This affects every visitor.",
+    );
+    if (!confirmed) {
+      return;
+    }
+    setResetting(true);
+    try {
+      await onReset();
+    } finally {
+      setResetting(false);
+    }
+  }
+
   return (
     <section className="card" id="bookings-panel" aria-labelledby="bookings-heading">
       <div className="card-h">
@@ -48,15 +99,28 @@ export function BookingsPanel({
               : null}
           </span>
         </div>
-        <button
-          className="btn small"
-          type="button"
-          data-testid="refresh-bookings"
-          onClick={onRefresh}
-          disabled={loading}
-        >
-          {loading ? "Refreshing…" : "Refresh"}
-        </button>
+        <div className="row">
+          <button
+            className="btn small"
+            type="button"
+            data-testid="refresh-bookings"
+            onClick={onRefresh}
+            disabled={loading}
+          >
+            {loading ? "Refreshing…" : "Refresh"}
+          </button>
+          <button
+            className="btn small danger"
+            type="button"
+            data-testid="reset-demo"
+            onClick={() => {
+              void resetDemo();
+            }}
+            disabled={resetting}
+          >
+            {resetting ? "Resetting…" : "Reset demo"}
+          </button>
+        </div>
       </div>
 
       <div data-testid="bookings-table" aria-busy={loading}>
@@ -97,6 +161,7 @@ export function BookingsPanel({
                   <th scope="col">Clinic</th>
                   <th scope="col">Booking</th>
                   <th scope="col">Notes</th>
+                  <th scope="col">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -116,6 +181,40 @@ export function BookingsPanel({
                       <span className="mono">{booking.booking_id}</span>
                     </td>
                     <td>{booking.notes && booking.notes.trim().length > 0 ? booking.notes : "—"}</td>
+                    <td>
+                      <div className="rowacts">
+                        <button
+                          type="button"
+                          className="btn small"
+                          data-testid="edit-booking"
+                          onClick={() => {
+                            onEdit(booking);
+                          }}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          className={armedDelete === booking.booking_id ? "btn small danger" : "btn small"}
+                          data-testid="delete-booking"
+                          aria-label={
+                            armedDelete === booking.booking_id
+                              ? `Confirm delete booking ${booking.booking_id}`
+                              : `Delete booking ${booking.booking_id}`
+                          }
+                          disabled={deleting === booking.booking_id}
+                          onClick={() => {
+                            if (armedDelete === booking.booking_id) {
+                              void deleteBooking(booking);
+                            } else {
+                              setArmedDelete(booking.booking_id);
+                            }
+                          }}
+                        >
+                          {armedDelete === booking.booking_id ? "Confirm delete" : "Delete"}
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>

@@ -55,7 +55,10 @@ class BookingService:
                 .join(Doctor, PatientBooking.doctor_id == Doctor.doctor_id)
                 .join(Treatment, PatientBooking.treatment_id == Treatment.treatment_id)
                 .join(Clinic, Doctor.clinic_id == Clinic.clinic_id)
-                .where(PatientBooking.patient_id == patient_id)
+                .where(
+                    PatientBooking.patient_id == patient_id,
+                    PatientBooking.deleted_at.is_(None),
+                )
             ).all()
             views = [
                 booking_view_from_models(booking, doctor, treatment, clinic)
@@ -84,6 +87,28 @@ class BookingService:
         )
         return upcoming + other
 
+    async def delete_booking(self, booking_id: str, *, reason: str | None = None) -> BookingView:
+        session = self._session_factory()
+        try:
+            booking = session.get(PatientBooking, booking_id)
+            if booking is None or booking.patient_id != PATIENT_ID:
+                raise NotFoundError("Booking not found.")
+            doctor = session.get(Doctor, booking.doctor_id)
+            treatment = session.get(Treatment, booking.treatment_id)
+            if doctor is None or treatment is None:
+                raise InvalidBookingDetailsError("The booking references missing data.")
+            clinic = session.get(Clinic, doctor.clinic_id)
+            if booking.deleted_at is None:
+                booking.deleted_at = self._clock.now()
+                booking.deleted_reason = (reason or "Deleted from the workbench")[:500]
+                session.commit()
+            return booking_view_from_models(booking, doctor, treatment, clinic)
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
     async def create_from_draft(
         self,
         draft_id: str,
@@ -106,6 +131,63 @@ class BookingService:
             if idempotency_key != expected_key:
                 raise IdempotencyConflictError(
                     "The idempotency key does not match this draft version."
+                )
+
+            editing_id = draft.editing_booking_id
+            if editing_id is not None:
+                existing = session.get(PatientBooking, editing_id)
+                if existing is None or existing.deleted_at is not None:
+                    raise NotFoundError("The booking being edited no longer exists.")
+                if draft.status == DraftStatus.BOOKED.value and draft.booking_id == editing_id:
+                    doctor = session.get(Doctor, existing.doctor_id)
+                    treatment = session.get(Treatment, existing.treatment_id)
+                    if doctor is None or treatment is None:
+                        raise InvalidBookingDetailsError(
+                            "The edited booking references missing data."
+                        )
+                    return (
+                        booking_view_from_models(
+                            existing,
+                            doctor,
+                            treatment,
+                            session.get(Clinic, doctor.clinic_id),
+                        ),
+                        False,
+                    )
+                if (
+                    draft.status != DraftStatus.BOOKING_IN_PROGRESS.value
+                    or draft.authorized_turn_id is None
+                ):
+                    raise ConfirmationRequiredError()
+                now = self._clock.now()
+                doctor, treatment = _validate_draft(session, draft, now)
+                assert draft.doctor_id is not None
+                assert draft.treatment_id is not None
+                assert draft.local_date is not None
+                assert draft.local_time is not None
+                assert draft.starts_at_utc is not None
+                assert draft.timezone is not None
+                existing.doctor_id = draft.doctor_id
+                existing.treatment_id = draft.treatment_id
+                existing.booking_date = date.fromisoformat(draft.local_date)
+                existing.booking_time = time.fromisoformat(draft.local_time)
+                existing.starts_at_utc = draft.starts_at_utc
+                existing.timezone = draft.timezone
+                existing.notes = draft.notes
+                existing.status = "Confirmed"
+                existing.request_hash = _canonical_hash_for_draft(draft)
+                draft.status = DraftStatus.BOOKED.value
+                draft.booking_id = editing_id
+                draft.updated_at = now
+                session.commit()
+                return (
+                    booking_view_from_models(
+                        existing,
+                        doctor,
+                        treatment,
+                        session.get(Clinic, doctor.clinic_id),
+                    ),
+                    False,
                 )
 
             existing = _booking_by_key(session, idempotency_key)

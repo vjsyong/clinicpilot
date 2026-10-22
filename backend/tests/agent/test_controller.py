@@ -146,6 +146,8 @@ async def test_unrelated_yes_after_interruption_cannot_authorize() -> None:
     assert first.booking_draft.status == DraftStatus.AWAITING_CONFIRMATION.value
     assert harness.drafts.clears >= 1
     assert harness.booking_api.create_calls == []
+    assert first.next_step is not None
+    assert first.next_step.kind != "confirm_booking"
 
     second = await harness.controller.handle_turn(harness.ctx("yes", "turn-yes"))
 
@@ -612,3 +614,145 @@ async def test_confirmation_stream_emits_booking_tool_events() -> None:
     assert starts[0]["name"] == "create_booking"
     assert ends[0]["ok"] is True
     assert booking.booking_id in ends[0]["summary"]
+
+
+def _incomplete_slot_draft():
+    return complete_draft(presented=None).model_copy(
+        update={
+            "local_date": None,
+            "local_time": None,
+            "starts_at_utc": None,
+            "missing_fields": ["local_date", "local_time"],
+            "status": DraftStatus.COLLECTING_DETAILS.value,
+        }
+    )
+
+
+async def test_incomplete_yes_is_replaced_with_dated_suggestions() -> None:
+    draft = _incomplete_slot_draft()
+    harness = build_harness(
+        [text_response('To book, review the summary and reply "yes".')],
+        draft=draft,
+    )
+
+    result = await harness.controller.handle_turn(harness.ctx("yes"))
+
+    assert harness.booking_api.create_calls == []
+    assert result.next_step is not None
+    assert result.next_step.kind == "choose_slot"
+    assert result.next_step.suggestions
+    assert "Suggested clinic-local times" in result.assistant_message
+    assert 'reply "yes"' not in result.assistant_message
+    assert "Still need" in result.assistant_message or "still need" in result.assistant_message
+
+
+async def test_patient_reported_pain_is_preserved_in_the_draft_notes() -> None:
+    draft = _incomplete_slot_draft()
+    harness = build_harness(
+        [text_response("Which day would you like?")],
+        draft=draft,
+    )
+
+    result = await harness.controller.handle_turn(harness.ctx("My knee hurts"))
+
+    assert result.booking_draft is not None
+    assert result.booking_draft.notes == "Patient reports: My knee hurts"
+    assert harness.drafts.draft is not None
+    assert harness.drafts.draft.notes == "Patient reports: My knee hurts"
+
+
+async def test_requesting_the_summary_re_presents_and_returns_confirm() -> None:
+    draft = complete_draft(presented=None)
+    harness = build_harness(
+        [text_response("Here is the current booking summary.")],
+        draft=draft,
+    )
+
+    result = await harness.controller.handle_turn(harness.ctx("Show me the booking summary"))
+
+    assert result.next_step is not None
+    assert result.next_step.kind == "confirm_booking"
+    assert "Booking summary:" in result.assistant_message
+    assert harness.drafts.presentations
+
+
+async def test_complete_draft_returns_a_confirm_step_and_version() -> None:
+    draft = complete_draft(presented="msg-summary")
+    harness = build_harness(
+        [text_response("Here is the summary again.")],
+        draft=draft,
+        messages=_presented_messages(draft),
+    )
+
+    result = await harness.controller.handle_turn(harness.ctx("What is the summary?"))
+
+    assert result.next_step is not None
+    assert result.next_step.kind == "confirm_booking"
+    assert result.next_step.draft_version == draft.version
+
+
+async def test_delete_booking_requires_a_separate_explicit_confirmation() -> None:
+    booking = booking_view()
+    harness = build_harness(
+        [
+            tool_response(
+                tool_call(
+                    "delete_patient_booking",
+                    '{"booking_id":"B2001"}',
+                )
+            ),
+            text_response("I can remove that booking."),
+        ],
+        booking_api=FakeBookingApi(bookings=[booking], delete_result=booking),
+    )
+
+    first = await harness.controller.handle_turn(harness.ctx("Delete booking B2001"))
+
+    assert harness.booking_api.delete_calls == []
+    assert first.next_step is not None
+    assert first.next_step.kind == "confirm_action"
+    assert first.next_step.action_booking is not None
+    assert first.next_step.action_booking.booking_id == "B2001"
+    assert "Reply yes" in first.assistant_message
+
+    second = await harness.controller.handle_turn(harness.ctx("yes"))
+
+    assert harness.booking_api.delete_calls == ["B2001"]
+    assert second.events[0].type == "booking_deleted"
+    assert second.events[0].booking is not None
+    assert "removed from the active list" in second.assistant_message
+    assert "audit record is retained" in second.assistant_message
+
+
+async def test_delete_is_not_executed_by_a_non_confirmation() -> None:
+    booking = booking_view()
+    harness = build_harness(
+        [
+            tool_response(tool_call("delete_patient_booking", '{"booking_id":"B2001"}')),
+            text_response("I can remove that booking."),
+            text_response("Let me know if you want to proceed."),
+        ],
+        booking_api=FakeBookingApi(bookings=[booking], delete_result=booking),
+    )
+
+    await harness.controller.handle_turn(harness.ctx("Delete booking B2001"))
+    await harness.controller.handle_turn(harness.ctx("Actually, what are the hours?"))
+
+    assert harness.booking_api.delete_calls == []
+
+
+async def test_reset_is_proposed_but_never_executed_by_the_model() -> None:
+    harness = build_harness(
+        [
+            tool_response(tool_call("request_demo_reset", "{}")),
+            text_response("I can reset the demo."),
+        ]
+    )
+
+    result = await harness.controller.handle_turn(harness.ctx("Reset the demo"))
+
+    assert result.next_step is not None
+    assert result.next_step.kind == "confirm_action"
+    assert result.next_step.action_id == "reset"
+    assert "Reset the shared demo workspace?" in result.assistant_message
+    assert result.events == []

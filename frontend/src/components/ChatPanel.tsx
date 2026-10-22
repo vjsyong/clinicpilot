@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   BookingDraftView,
   ConversationSummary,
+  SlotSuggestion,
   SourceRef,
 } from "../api/types";
 import type { AssistantChatMessage, ChatMessage } from "../lib/chat";
@@ -30,6 +31,9 @@ interface ChatPanelProps {
   onStop: () => void;
   onRetry: () => void;
   onRegenerate: (message: AssistantChatMessage) => void;
+  onConfirm: () => void;
+  onChooseSlot: (slot: SlotSuggestion) => void;
+  onReset: () => void;
   onNew: () => void;
   onLogout: () => void;
   onSelect: (id: string) => void;
@@ -60,6 +64,9 @@ export function ChatPanel({
   onStop,
   onRetry,
   onRegenerate,
+  onConfirm,
+  onChooseSlot,
+  onReset,
   onNew,
   onLogout,
   onSelect,
@@ -83,7 +90,9 @@ export function ChatPanel({
   }, []);
 
   useEffect(() => {
-    if (atBottomRef.current) {
+    const last = messages[messages.length - 1];
+    if (atBottomRef.current || last?.kind === "user") {
+      atBottomRef.current = true;
       scrollToBottom();
     }
   }, [messages, inFlight, scrollToBottom]);
@@ -217,7 +226,16 @@ export function ChatPanel({
                   <ChatMessageView
                     key={message.messageId}
                     message={message}
+                    currentDraft={draft}
+                    inFlight={inFlight}
                     onSource={setSource}
+                    onConfirm={
+                      message.messageId === lastAssistantId ? onConfirm : undefined
+                    }
+                    onChooseSlot={
+                      message.messageId === lastAssistantId ? onChooseSlot : undefined
+                    }
+                    onReset={message.messageId === lastAssistantId ? onReset : undefined}
                     onRegenerate={
                       canRegenerate &&
                       message.kind === "assistant" &&
@@ -234,7 +252,13 @@ export function ChatPanel({
                       AI
                     </div>
                     <div className="bubble ai">
-                      <BookingDraftCard draft={draft} />
+                      <BookingDraftCard
+                        draft={draft}
+                        currentDraft={draft}
+                        inFlight={inFlight}
+                        onConfirm={onConfirm}
+                        onChooseSlot={onChooseSlot}
+                      />
                     </div>
                   </div>
                 ) : null}

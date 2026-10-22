@@ -125,6 +125,10 @@ class RestBookingApi:
         views = [_booking_view(item) for item in payload]
         return [view for view in views if view.patient_id == PATIENT_ID]
 
+    async def delete_booking(self, booking_id: str) -> BookingView:
+        response = await self._request("DELETE", f"api/bookings/{booking_id}")
+        return _booking_view(_json_payload(response))
+
     async def create_booking(self, draft_id: str, draft_version: int) -> BookingView:
         idempotency_key = f"{BOOKING_CREATE_KEY_PREFIX}:{draft_id}:v{draft_version}"
         last_error: BookingApiError | None = None

@@ -103,6 +103,39 @@ function renderInline(
 }
 
 const BLOCK_START = /^(```|#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+|(-{3,}|\*{3,}|_{3,})$)/;
+const TABLE_SEPARATOR = /^:?-{3,}:?$/;
+
+function splitTableRow(line: string): string[] {
+  const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+  const cells: string[] = [];
+  let current = "";
+  for (let offset = 0; offset < trimmed.length; offset += 1) {
+    const character = trimmed[offset];
+    if (character === "\\" && trimmed[offset + 1] === "|") {
+      current += "|";
+      offset += 1;
+      continue;
+    }
+    if (character === "|") {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += character;
+  }
+  cells.push(current.trim());
+  return cells;
+}
+
+function isTableStart(lines: string[], index: number): boolean {
+  const header = lines[index]?.trim() ?? "";
+  const separator = lines[index + 1]?.trim() ?? "";
+  if (!header.includes("|") || !separator.includes("|")) {
+    return false;
+  }
+  const separators = splitTableRow(separator);
+  return separators.length > 0 && separators.every((cell) => TABLE_SEPARATOR.test(cell));
+}
 
 export function Markdown({ text, sources = [], onSource }: MarkdownProps) {
   const lines = (text ?? "").replace(/\r\n/g, "\n").split("\n");
@@ -114,6 +147,67 @@ export function Markdown({ text, sources = [], onSource }: MarkdownProps) {
     const stripped = line.trim();
     if (!stripped) {
       index += 1;
+      continue;
+    }
+    if (isTableStart(lines, index)) {
+      const headers = splitTableRow(line);
+      const separators = splitTableRow(lines[index + 1] ?? "");
+      const alignments = separators.map((cell) =>
+        cell.startsWith(":") && cell.endsWith(":")
+          ? "center"
+          : cell.endsWith(":")
+            ? "end"
+            : "start",
+      );
+      index += 2;
+      const rows: string[][] = [];
+      while (index < lines.length) {
+        const row = lines[index].trim();
+        if (!row || !row.includes("|")) {
+          break;
+        }
+        rows.push(splitTableRow(row));
+        index += 1;
+      }
+      blocks.push(
+        <div className="tablewrap" key={`table-${index}`}>
+          <table className="tbl">
+            <thead>
+              <tr>
+                {headers.map((cell, cellIndex) => (
+                  <th key={`th-${index}-${cellIndex}`}>
+                    {renderInline(
+                      cell,
+                      `th-${index}-${cellIndex}`,
+                      sources,
+                      onSource,
+                    )}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, rowIndex) => (
+                <tr key={`tr-${index}-${rowIndex}`}>
+                  {headers.map((_header, cellIndex) => (
+                    <td
+                      key={`td-${index}-${rowIndex}-${cellIndex}`}
+                      className={alignments[cellIndex] === "end" ? "r" : undefined}
+                    >
+                      {renderInline(
+                        row[cellIndex] ?? "",
+                        `td-${index}-${rowIndex}-${cellIndex}`,
+                        sources,
+                        onSource,
+                      )}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+      );
       continue;
     }
     if (stripped.startsWith("```")) {
@@ -195,7 +289,7 @@ export function Markdown({ text, sources = [], onSource }: MarkdownProps) {
     const paragraph: string[] = [];
     while (index < lines.length) {
       const candidate = lines[index].trim();
-      if (!candidate || BLOCK_START.test(candidate)) {
+      if (!candidate || BLOCK_START.test(candidate) || isTableStart(lines, index)) {
         break;
       }
       paragraph.push(candidate);

@@ -565,6 +565,7 @@ def _transcript_turns(
         turn.sources = response.sources
         turn.booking_draft = response.booking_draft
         turn.events = response.events
+        turn.next_step = response.next_step
     return result
 
 

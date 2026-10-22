@@ -292,7 +292,7 @@ export function ChatMessageView({
           onConfirm={onConfirm}
           onReset={onReset}
         />
-        {message.draft && !booking ? (
+        {message.draft && !booking && message.nextStep?.kind !== "confirm_action" ? (
           <BookingDraftCard
             draft={message.draft}
             nextStep={message.nextStep}

@@ -724,6 +724,48 @@ async def test_delete_booking_requires_a_separate_explicit_confirmation() -> Non
     assert "audit record is retained" in second.assistant_message
 
 
+async def test_delete_proposal_does_not_attach_a_stale_booked_draft_card() -> None:
+    booking = booking_view(booking_id="B2001")
+    booked_draft = complete_draft(status=DraftStatus.BOOKED.value, presented=None).model_copy(
+        update={"booking_id": "B2001"}
+    )
+    harness = build_harness(
+        [
+            tool_response(tool_call("delete_patient_booking", '{"booking_id":"B2001"}')),
+            text_response("I can remove that booking."),
+        ],
+        draft=booked_draft,
+        booking_api=FakeBookingApi(bookings=[booking], delete_result=booking),
+    )
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    async def emit(event: str, data: dict[str, Any]) -> None:
+        events.append((event, data))
+
+    result = await harness.controller.handle_turn(harness.ctx("Delete booking B2001"), emit=emit)
+
+    assert result.next_step is not None
+    assert result.next_step.kind == "confirm_action"
+    assert result.booking_draft is None
+    assert [event for event, _ in events if event == "draft"] == []
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Yes, Metro Care Health Clinic is open on weekdays.",
+        "I can confirm the clinic opens at 08:00 on weekdays.",
+    ],
+)
+async def test_a_normal_answer_is_not_replaced_with_booking_guidance(answer: str) -> None:
+    harness = build_harness([text_response(answer)])
+
+    result = await harness.controller.handle_turn(harness.ctx("Is the clinic open?"))
+
+    assert result.assistant_message == answer
+    assert "Tell me the doctor" not in result.assistant_message
+
+
 async def test_delete_is_not_executed_by_a_non_confirmation() -> None:
     booking = booking_view()
     harness = build_harness(

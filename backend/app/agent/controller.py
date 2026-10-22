@@ -117,6 +117,20 @@ _SUMMARY_REQUEST = re.compile(
     r"show\s+(?:my|the)\s+booking|current\s+booking)\b",
     re.IGNORECASE,
 )
+# Match an actual request for confirmation, not any sentence that happens to
+# contain "yes" or "confirm". An ordinary answer ("Yes, the clinic is open")
+# must survive unchanged while a premature confirmation request on an
+# incomplete draft is replaced with deterministic guidance.
+_CONFIRMATION_REQUEST = re.compile(
+    r"\b(?:reply|respond|say|type)\s+(?:with\s+)?[\"']?yes\b"
+    r"|\b(?:please|kindly)\s+confirm\b"
+    r"|\bconfirm\s+(?:it|this|the\s+booking|the\s+appointment|your\s+booking|the\s+details)\b"
+    r"|\b(?:shall|should|may|can)\s+i\s+(?:book|proceed|confirm|go\s+ahead)\b"
+    r"|\bwould\s+you\s+like\s+me\s+to\s+(?:book|proceed|confirm|go\s+ahead)\b"
+    r"|\bdo\s+you\s+want\s+me\s+to\s+(?:book|proceed|confirm|go\s+ahead)\b"
+    r"|\bgo\s+ahead\s+and\s+(?:book|confirm)\b",
+    re.IGNORECASE,
+)
 _TRAILING_PUNCTUATION = re.compile(r"[.!?]+$")
 _WHITESPACE = re.compile(r"\s+")
 _CONFIRMATION_PHRASES = frozenset(
@@ -777,7 +791,7 @@ class AgentController:
             presented_view = view
 
         if step.kind in {"choose_slot", "collect_details"}:
-            if not final_text or re.search(r"\b(yes|confirm)\b", final_text, re.IGNORECASE):
+            if not final_text or _CONFIRMATION_REQUEST.search(final_text):
                 final_text = guidance_text(step)
             elif (
                 step.kind == "choose_slot"
@@ -864,8 +878,12 @@ class AgentController:
             "sources",
             {"sources": [source.model_dump(mode="json") for source in sources.values()]},
         )
-        if view is not None:
-            await _emit(emit, "draft", {"draft": view.model_dump(mode="json")})
+        # A delete/reset proposal is its own action card. Attaching the
+        # conversation's previous draft would render a second, unrelated card
+        # (for example a stale "booked" summary) under the same reply.
+        card_view = None if (delete_proposal is not None or reset_proposal) else view
+        if card_view is not None:
+            await _emit(emit, "draft", {"draft": card_view.model_dump(mode="json")})
         if delete_proposal is None and not reset_proposal:
             if (
                 view is not None
@@ -897,7 +915,7 @@ class AgentController:
         return TurnResult(
             assistant_message=final_text,
             sources=list(sources.values()),
-            booking_draft=view,
+            booking_draft=card_view,
             events=[],
             next_step=step,
         )

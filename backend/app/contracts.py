@@ -44,6 +44,15 @@ class RetrievedDocument(BaseModel):
     metadata: dict[str, str] = Field(default_factory=dict)
 
 
+class Evidence(BaseModel):
+    """One ranked knowledge result with retrieval provenance."""
+
+    document: RetrievedDocument
+    score: float
+    channels: list[str] = Field(default_factory=list)
+    excerpt: str = ""
+
+
 class BookingDraftView(BaseModel):
     draft_id: str
     version: int
@@ -101,6 +110,44 @@ class ChatResponse(BaseModel):
     sources: list[SourceRef] = Field(default_factory=list)
     booking_draft: BookingDraftView | None = None
     events: list[Event] = Field(default_factory=list)
+
+
+class ConversationSummary(BaseModel):
+    id: str
+    title: str
+    created_at: datetime
+    updated_at: datetime
+    message_count: int
+    turn_count: int
+    active_turn_id: str | None = None
+
+
+class ToolTrace(BaseModel):
+    id: str | None = None
+    name: str
+    args: dict[str, Any] = Field(default_factory=dict)
+    ok: bool = True
+    summary: str = ""
+    sources: list[SourceRef] = Field(default_factory=list)
+
+
+class TranscriptTurn(BaseModel):
+    turn_id: str
+    client_message_id: str
+    user: str
+    status: str
+    created_at: datetime
+    assistant: str | None = None
+    sources: list[SourceRef] = Field(default_factory=list)
+    booking_draft: BookingDraftView | None = None
+    tools: list[ToolTrace] = Field(default_factory=list)
+    events: list[Event] = Field(default_factory=list)
+
+
+class ConversationTranscript(BaseModel):
+    conversation: ConversationSummary
+    turns: list[TranscriptTurn]
+    draft: BookingDraftView | None = None
 
 
 class DraftUpdate(BaseModel):
@@ -202,6 +249,15 @@ class KnowledgeIndex(Protocol):
         filters: dict[str, str] | None = None,
     ) -> list[RetrievedDocument]: ...
 
+    def search_evidence(
+        self,
+        query: str,
+        limit: int = 5,
+        filters: dict[str, str] | None = None,
+    ) -> list[Evidence]: ...
+
+    def lookup(self, source_file: str, record_id: str) -> RetrievedDocument | None: ...
+
     async def prewarm(self) -> None: ...
 
 
@@ -216,4 +272,4 @@ class ModelClient(Protocol):
 
 
 class AgentController(Protocol):
-    async def handle_turn(self, ctx: TurnContext) -> TurnResult: ...
+    async def handle_turn(self, ctx: TurnContext, emit: Any = None) -> TurnResult: ...

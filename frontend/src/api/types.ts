@@ -73,3 +73,93 @@ export interface ApiErrorEnvelope {
 export interface BookingsEnvelope {
   bookings?: BookingView[];
 }
+
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+  turn_count: number;
+  active_turn_id?: string | null;
+}
+
+export interface ToolTrace {
+  id?: string | null;
+  name: string;
+  args: Record<string, unknown>;
+  ok: boolean;
+  summary: string;
+  sources: SourceRef[];
+  running?: boolean;
+}
+
+export interface TranscriptTurn {
+  turn_id: string;
+  client_message_id: string;
+  user: string;
+  status: string;
+  created_at: string;
+  assistant?: string | null;
+  sources: SourceRef[];
+  booking_draft?: BookingDraftView | null;
+  tools: ToolTrace[];
+  events: ChatEvent[];
+}
+
+export interface ConversationTranscript {
+  conversation: ConversationSummary;
+  turns: TranscriptTurn[];
+  draft?: BookingDraftView | null;
+}
+
+export interface KnowledgeRecord {
+  document_id: string;
+  source_file: string;
+  record_id: string;
+  citation: string;
+  text: string;
+  metadata: Record<string, string>;
+}
+
+export interface KnowledgeStatus {
+  ready: boolean;
+  records: number;
+  model: string;
+  revision: string;
+}
+
+export interface ChatStreamSession {
+  conversation_id: string;
+  turn_id: string;
+  message_id: string;
+}
+
+export interface ChatStreamError {
+  code: string;
+  message: string;
+  retryable: boolean;
+}
+
+export type ChatStreamEvent =
+  | { event: "session"; data: ChatStreamSession }
+  | { event: "status"; data: { stage: string } }
+  | { event: "reasoning"; data: { delta: string } }
+  | { event: "content"; data: { delta: string } }
+  | { event: "content_break"; data: Record<string, never> }
+  | { event: "tool_start"; data: { id: string; name: string; args: Record<string, unknown> } }
+  | {
+      event: "tool_end";
+      data: {
+        id: string;
+        name: string;
+        ok: boolean;
+        summary: string;
+        sources?: SourceRef[];
+      };
+    }
+  | { event: "sources"; data: { sources: SourceRef[] } }
+  | { event: "draft"; data: { draft: BookingDraftView } }
+  | { event: "done"; data: ChatResponse }
+  | { event: "error"; data: ChatStreamError }
+  | { event: "stopped"; data: Record<string, never> };

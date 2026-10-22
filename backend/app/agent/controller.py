@@ -8,10 +8,11 @@ claims success from generated prose.
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 import re
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -54,6 +55,7 @@ from app.contracts import (
     TurnResult,
 )
 from app.services.booking_views import booking_success_text, booking_view_from_draft
+from app.services.tool_summary import result_sources, tool_summary
 from app.settings import Settings
 
 logger = logging.getLogger("clinicpilot.agent")
@@ -78,17 +80,23 @@ NO_BOOKING_CREATED_MESSAGE = (
     "No booking was created. Your draft is still saved. To book, review the "
     'summary below and reply "yes".'
 )
+NO_BOOKING_CREATED_NO_DRAFT_MESSAGE = (
+    "No booking was created. Tell me the doctor, treatment, date, and time you "
+    "would like, and I can prepare the booking for your confirmation."
+)
 
 _BOOKING_SUCCESS_CLAIM = re.compile(
     r"(?:\b(?:your\s+)?(?:appointment|booking|reservation)\s+"
-    r"(?:is|has\s+been|was|has)\s+(?:now\s+)?"
-    r"(?:booked|confirmed|scheduled|reserved|complete|all\s+set)\b"
-    r"|\b(?:appointment|booking|reservation)\s+confirmed\b"
-    r"|\byou(?:'re|\s+are)\s+(?:now\s+)?(?:booked|confirmed|all\s+set)\b"
-    r"|\bi(?:'ve|\s+have)?\s+(?:booked|scheduled|reserved)\b"
-    r"|\bsuccessfully\s+(?:booked|scheduled|reserved)\b"
+    r"(?:is|has\s+been|was|has|has\s+now\s+been|is\s+now)\s+"
+    r"(?:now\s+)?(?:booked|confirmed|scheduled|reserved|created|made|complete|all\s+set)\b"
+    r"|\b(?:appointment|booking|reservation)\s+(?:is\s+)?confirmed\b"
     r"|\bbooking\s+confirmed\b"
-    r"|\bappointment\s+confirmed\b)",
+    r"|\byou(?:'re|\s+are)\s+(?:now\s+)?(?:all\s+set|booked|confirmed)\b"
+    r"|\bi(?:'ve|\s+have|\s+had)?\s+(?:booked|scheduled|reserved|confirmed|set\s+up)\b"
+    r"|\bi(?:'ve|\s+have)?\s+got\s+you\s+booked\b"
+    r"|\b(?:successfully|fully)\s+(?:booked|scheduled|confirmed|reserved)\b"
+    r"|\b(?:booked|scheduled|confirmed|reserved)\s+(?:your|the)\s+"
+    r"(?:appointment|booking|reservation)\b)",
     re.IGNORECASE,
 )
 
@@ -107,6 +115,8 @@ _CONFIRMATION_PHRASES = frozenset(
         "please book it",
     }
 )
+
+type EventEmitter = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 
 @dataclass(slots=True)
@@ -142,19 +152,21 @@ class AgentController:
         # cleared, which prevents an in-process stale summary from authorizing.
         self._presented: dict[str, tuple[int, str] | None] = {}
 
-    async def handle_turn(self, ctx: TurnContext) -> TurnResult:
+    async def handle_turn(self, ctx: TurnContext, emit: EventEmitter | None = None) -> TurnResult:
+        await _emit(emit, "status", {"stage": "thinking"})
         messages = list(await self._conversations.load_messages(ctx.conversation_id))
         draft = await self._drafts.get(ctx.conversation_id)
         last_assistant_id = await self._conversations.last_assistant_message_id(ctx.conversation_id)
         _last_id, last_assistant_content, last_presentation = _last_assistant(messages)
 
-        messages.append(
-            {
-                "role": "user",
-                "content": ctx.user_text,
-                "_cp_message_id": ctx.turn_id,
-            }
-        )
+        if not _already_appended(messages, ctx):
+            messages.append(
+                {
+                    "role": "user",
+                    "content": ctx.user_text,
+                    "_cp_message_id": ctx.turn_id,
+                }
+            )
 
         if _eligible_confirmation(
             self,
@@ -165,7 +177,7 @@ class AgentController:
             last_presentation,
             ctx.user_text,
         ):
-            return await self._confirmation_turn(ctx, messages)
+            return await self._confirmation_turn(ctx, messages, emit)
 
         await self._invalidate_presentation(ctx.conversation_id)
 
@@ -181,13 +193,15 @@ class AgentController:
             if recovered is not None:
                 return recovered
 
-        return await self._normal_turn(ctx, messages, draft)
+        return await self._normal_turn(ctx, messages, draft, emit)
 
     async def _confirmation_turn(
         self,
         ctx: TurnContext,
         messages: list[dict[str, Any]],
+        emit: EventEmitter | None = None,
     ) -> TurnResult:
+        await _emit(emit, "status", {"stage": "confirming"})
         try:
             authorized = await self._drafts.authorize(ctx.conversation_id, ctx.turn_id)
         except Exception as exc:
@@ -201,6 +215,16 @@ class AgentController:
 
         booking: BookingView | None = None
         failure_message: str | None = None
+        await _emit(emit, "status", {"stage": "booking"})
+        await _emit(
+            emit,
+            "tool_start",
+            {
+                "id": "create_booking",
+                "name": "create_booking",
+                "args": {"draft_id": authorized.draft_id, "version": authorized.version},
+            },
+        )
         try:
             booking = await self._booking_api.create_booking(
                 authorized.draft_id, authorized.version
@@ -210,6 +234,21 @@ class AgentController:
         except Exception as exc:
             logger.warning("Booking API failure (%s).", type(exc).__name__)
             failure_message = INTERNAL_BOOKING_FAILURE_MESSAGE
+        await _emit(
+            emit,
+            "tool_end",
+            {
+                "id": "create_booking",
+                "name": "create_booking",
+                "ok": booking is not None,
+                "summary": (
+                    f"booking {booking.booking_id}"
+                    if booking is not None
+                    else (failure_message or BOOKING_FAILURE_MESSAGE)
+                ),
+                "sources": [],
+            },
+        )
 
         if failure_message is not None:
             recovered = await self._recover_after_failed_booking(ctx, messages)
@@ -239,6 +278,7 @@ class AgentController:
             await self._drafts.mark_booked(ctx.conversation_id, booking)
         except Exception as exc:
             logger.warning("Could not mark draft booked (%s).", type(exc).__name__)
+        await _emit(emit, "status", {"stage": "booked"})
 
         view = await self._current_draft(ctx.conversation_id)
         if view is None or view.status != DraftStatus.BOOKED.value:
@@ -414,6 +454,7 @@ class AgentController:
         ctx: TurnContext,
         messages: list[dict[str, Any]],
         draft: BookingDraftView | None,
+        emit: EventEmitter | None = None,
     ) -> TurnResult:
         prompt = build_system_prompt(ctx.now, await self._load_patient_context(), draft)
         definitions = tool_definitions()
@@ -426,20 +467,41 @@ class AgentController:
                 {"role": "system", "content": prompt},
                 *_trim_messages(messages, self._settings.max_history_messages),
             ]
-            response = await self._model_client.complete(
-                messages=request,
-                tools=definitions,
-                tool_choice="auto",
-            )
+            response = await self._model_round(request, definitions, emit)
             calls = list(response.tool_calls)
             if not calls:
                 final_text = (response.content or "").strip()
                 break
 
+            if response.content:
+                await _emit(emit, "content_break", {})
             assistant_id = str(uuid.uuid4())
             messages.append(_assistant_tool_call_message(calls, response.content, assistant_id))
             for call in calls:
+                await _emit(
+                    emit,
+                    "tool_start",
+                    {
+                        "id": call.id,
+                        "name": call.name,
+                        "args": _parse_tool_args(call.arguments),
+                    },
+                )
                 outcome = await self._execute_tool(ctx, call, sources)
+                payload = dict(outcome.result.payload)
+                await _emit(
+                    emit,
+                    "tool_end",
+                    {
+                        "id": call.id,
+                        "name": call.name,
+                        "ok": bool(payload.get("ok", not outcome.result.is_error)),
+                        "summary": tool_summary(call.name, payload),
+                        "sources": [
+                            source.model_dump(mode="json") for source in result_sources(payload)
+                        ],
+                    },
+                )
                 if outcome.presentation_changed:
                     presentation = outcome.presentation
                 messages.append(
@@ -467,7 +529,11 @@ class AgentController:
             if existing_booking is not None:
                 final_text = booking_success_text(existing_booking)
             else:
-                final_text = NO_BOOKING_CREATED_MESSAGE
+                final_text = (
+                    NO_BOOKING_CREATED_MESSAGE
+                    if view is not None
+                    else NO_BOOKING_CREATED_NO_DRAFT_MESSAGE
+                )
                 if (
                     view is not None
                     and view.status == DraftStatus.AWAITING_CONFIRMATION.value
@@ -519,12 +585,56 @@ class AgentController:
 
         messages.append(_assistant_text_message(final_text, assistant_id, presented_view))
         await self._conversations.save_messages(ctx.conversation_id, messages, ctx.now)
+        await _emit(
+            emit,
+            "sources",
+            {"sources": [source.model_dump(mode="json") for source in sources.values()]},
+        )
+        if view is not None:
+            await _emit(emit, "draft", {"draft": view.model_dump(mode="json")})
         return TurnResult(
             assistant_message=final_text,
             sources=list(sources.values()),
             booking_draft=view,
             events=[],
         )
+
+    async def _model_round(
+        self,
+        request: list[dict[str, Any]],
+        definitions: list[dict[str, Any]],
+        emit: EventEmitter | None,
+    ) -> ModelResponse:
+        stream = getattr(self._model_client, "stream_complete", None)
+        if emit is None or stream is None:
+            return await self._model_client.complete(
+                messages=request,
+                tools=definitions,
+                tool_choice="auto",
+            )
+
+        content: list[str] = []
+        calls: list[ModelToolCall] = []
+        async for event in stream(
+            messages=request,
+            tools=definitions,
+            tool_choice="auto",
+        ):
+            kind = event.get("type")
+            if kind == "content":
+                text = str(event.get("text") or "")
+                if text:
+                    content.append(text)
+                    await _emit(emit, "content", {"delta": text})
+            elif kind == "reasoning":
+                text = str(event.get("text") or "")
+                if text:
+                    await _emit(emit, "reasoning", {"delta": text})
+            elif kind == "tool_calls":
+                calls = [
+                    call for call in event.get("calls") or [] if isinstance(call, ModelToolCall)
+                ]
+        return ModelResponse(content="".join(content) or None, tool_calls=calls)
 
     async def _execute_tool(
         self,
@@ -567,7 +677,7 @@ class AgentController:
         try:
             if not self._index.ready():
                 await self._index.prewarm()
-            documents = self._index.search(query, limit=5, filters=filters)
+            evidence = self._index.search_evidence(query, limit=5, filters=filters)
         except Exception as exc:
             logger.warning("Knowledge search failed (%s).", type(exc).__name__)
             return _ToolOutcome(
@@ -578,14 +688,19 @@ class AgentController:
             )
 
         results: list[dict[str, Any]] = []
-        for document in documents:
+        for item in evidence:
+            document = item.document
             _record_source(document, sources)
             results.append(
                 {
                     "document_id": document.document_id,
                     "source_file": document.source_file,
                     "record_id": document.record_id,
+                    "citation": f"[doc:{document.record_id}]",
                     "text": document.text,
+                    "excerpt": item.excerpt,
+                    "score": round(item.score, 6),
+                    "channels": item.channels,
                     "metadata": dict(document.metadata),
                 }
             )
@@ -865,8 +980,37 @@ def _confirmation_tool_content(
     return booking_tool_result(booking).content
 
 
+def _already_appended(messages: Sequence[dict[str, Any]], ctx: TurnContext) -> bool:
+    """Regeneration trims to the user message before starting a fresh turn."""
+    if not messages:
+        return False
+    last = messages[-1]
+    return (
+        last.get("role") == "user"
+        and last.get("_cp_message_id") == ctx.turn_id
+        and str(last.get("content") or "") == ctx.user_text
+    )
+
+
 def _claims_booking_success(text: str) -> bool:
     return _BOOKING_SUCCESS_CLAIM.search(text) is not None
+
+
+async def _emit(emitter: EventEmitter | None, event: str, data: dict[str, Any]) -> None:
+    if emitter is None:
+        return
+    try:
+        await emitter(event, data)
+    except Exception as exc:  # pragma: no cover - defensive subscriber boundary
+        logger.debug("Dropped assistant stream event %s (%s)", event, type(exc).__name__)
+
+
+def _parse_tool_args(arguments: str) -> dict[str, Any]:
+    try:
+        decoded = json.loads(arguments or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return dict(decoded) if isinstance(decoded, dict) else {}
 
 
 def _record_source(

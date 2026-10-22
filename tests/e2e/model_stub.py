@@ -231,7 +231,9 @@ def _knowledge_answer(content: Any) -> str:
         if text:
             if len(text) > 320:
                 text = text[:317].rstrip() + "..."
-            return f"According to the clinic information: {text}"
+            citation = documents[0].get("citation")
+            suffix = f" {citation}" if isinstance(citation, str) and citation else ""
+            return f"According to the clinic information: {text}{suffix}"
     return (
         "The clinic knowledge base has information about that question. "
         "Please contact the clinic if you need exact scheduling details."
@@ -426,6 +428,45 @@ class ModelStubHandler(BaseHTTPRequestHandler):
             return
         self._send_error_json(HTTPStatus.NOT_FOUND, "not found")
 
+    def _send_stream(self, model: str, decision: dict[str, Any]) -> None:
+        created = int(time.time())
+        stream_id = f"chatcmpl-stub-{created}"
+
+        def chunk(delta: dict[str, Any], finish_reason: str | None = None) -> str:
+            payload = {
+                "id": stream_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": delta,
+                        "finish_reason": finish_reason,
+                    }
+                ],
+            }
+            return "data: " + json.dumps(payload, separators=(",", ":")) + "\n\n"
+
+        frames: list[str] = []
+        content = decision.get("content")
+        if isinstance(content, str) and content:
+            frames.append(chunk({"role": "assistant", "content": content}))
+        tool_calls = decision.get("tool_calls") or []
+        if tool_calls:
+            frames.append(chunk({"role": "assistant", "tool_calls": tool_calls}))
+            frames.append(chunk({}, "tool_calls"))
+        else:
+            frames.append(chunk({}, "stop"))
+        frames.append("data: [DONE]\n\n")
+        body = "".join(frames).encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_POST(self) -> None:
         path = self.path.split("?", 1)[0]
         if path not in ("/v1/chat/completions", "/chat/completions"):
@@ -460,6 +501,9 @@ class ModelStubHandler(BaseHTTPRequestHandler):
         if not isinstance(model, str) or not model:
             model = DEFAULT_MODEL
         decision = decide(messages, payload.get("tools"))
+        if payload.get("stream"):
+            self._send_stream(model, decision)
+            return
         self._send_json(
             HTTPStatus.OK,
             _completion_payload(model, decision, messages),

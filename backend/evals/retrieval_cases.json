@@ -1,0 +1,58 @@
+{
+  "cases": [
+    {
+      "name": "knee-paraphrase",
+      "query": "my knee hurts",
+      "expected": ["D104", "T005"],
+      "top_k": 3
+    },
+    {
+      "name": "cancellation-policy",
+      "query": "cancellation policy",
+      "expected": ["C001", "C002"],
+      "top_k": 2
+    },
+    {
+      "name": "doctor-name",
+      "query": "Dr. James Wilson",
+      "expected": ["D104"],
+      "top_k": 1
+    },
+    {
+      "name": "spanish-speaking",
+      "query": "which doctor speaks Spanish",
+      "expected": ["D101"],
+      "top_k": 3
+    },
+    {
+      "name": "child-vaccination",
+      "query": "child vaccination",
+      "expected": ["D102", "T002"],
+      "top_k": 3
+    },
+    {
+      "name": "skin-rash",
+      "query": "skin rash and acne",
+      "expected": ["D103", "T003"],
+      "top_k": 3
+    },
+    {
+      "name": "evening-hours",
+      "query": "which clinic is open on Saturday",
+      "expected": ["C001"],
+      "top_k": 2
+    },
+    {
+      "name": "twelve-hour-notice",
+      "query": "12 hours notice before cancelling",
+      "expected": ["C002"],
+      "top_k": 2
+    },
+    {
+      "name": "exact-id",
+      "query": "C002",
+      "expected": ["C002"],
+      "top_k": 1
+    }
+  ]
+}

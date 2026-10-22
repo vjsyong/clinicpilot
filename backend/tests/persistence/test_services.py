@@ -21,6 +21,7 @@ from app.services.errors import (
     IdempotencyConflictError,
     InvalidBookingDetailsError,
 )
+from app.services.hashing import chat_request_hash
 from sqlalchemy import func, select
 from tests.conftest import DBHarness
 
@@ -487,3 +488,156 @@ async def test_conversation_store_persists_and_finds_assistant_message_id(
     assert isinstance(record, ConversationRecord)
     assert record.id == conversation_id
     assert record.patient_id == PATIENT_ID
+
+
+@pytest.mark.asyncio
+async def test_prepare_regeneration_trims_the_last_reply_and_starts_a_new_turn(
+    db: DBHarness, frozen_clock: FrozenClock
+) -> None:
+    from app.contracts import ChatResponse
+    from app.db.models import ChatTurn
+    from app.services.errors import ServiceError
+
+    _session, conversation_id = await _new_conversation(db, frozen_clock)
+    conversations = ConversationService(db.session_factory, frozen_clock)
+    started = await conversations.start_turn(
+        conversation_id, "m-regen", chat_request_hash("draft-1", 1)
+    )
+    assert started.turn_id is not None
+    messages = [
+        {"role": "user", "content": "What are the hours?", "_cp_message_id": started.turn_id},
+        {"role": "assistant", "content": "Weekdays.", "_cp_message_id": "assistant-1"},
+    ]
+    await conversations.save_messages(conversation_id, messages, frozen_clock.now())
+    await conversations.finish_turn(
+        started.turn_id,
+        ChatResponse(
+            conversation_id=conversation_id,
+            message_id="m-regen",
+            assistant_message="Weekdays.",
+        ),
+    )
+
+    prepared = await conversations.prepare_regeneration(conversation_id, "m-regen")
+
+    assert prepared is not None
+    assert prepared.user_text == "What are the hours?"
+    assert prepared.turn_id != started.turn_id
+    assert await conversations.load_messages(conversation_id) == [
+        {"role": "user", "content": "What are the hours?", "_cp_message_id": prepared.turn_id}
+    ]
+    with db.session_factory() as session:
+        new_turn = session.get(ChatTurn, prepared.turn_id)
+        assert new_turn is not None
+        assert new_turn.status == "in_progress"
+        old_turn = session.get(ChatTurn, started.turn_id)
+        assert old_turn is None
+        assert new_turn.client_message_id == "m-regen"
+
+    with pytest.raises(ServiceError):
+        await conversations.prepare_regeneration(conversation_id, "m-not-latest")
+
+
+@pytest.mark.asyncio
+async def test_prepare_regeneration_refuses_confirmations_and_committed_bookings(
+    db: DBHarness, frozen_clock: FrozenClock
+) -> None:
+    from app.contracts import ChatResponse, Event
+    from app.services.errors import ServiceError
+
+    _session, conversation_id = await _new_conversation(db, frozen_clock)
+    conversations = ConversationService(db.session_factory, frozen_clock)
+    started = await conversations.start_turn(
+        conversation_id, "m-confirm", chat_request_hash("draft-1", 1)
+    )
+    assert started.turn_id is not None
+    await conversations.save_messages(
+        conversation_id,
+        [{"role": "user", "content": "yes", "_cp_message_id": started.turn_id}],
+        frozen_clock.now(),
+    )
+    await conversations.finish_turn(
+        started.turn_id,
+        ChatResponse(
+            conversation_id=conversation_id,
+            message_id="m-confirm",
+            assistant_message="Please confirm.",
+        ),
+    )
+    with pytest.raises(ServiceError):
+        await conversations.prepare_regeneration(conversation_id, "m-confirm")
+
+    _session2, conversation2 = await _new_conversation(db, frozen_clock)
+    started2 = await conversations.start_turn(
+        conversation2, "m-booked", chat_request_hash("draft-2", 1)
+    )
+    assert started2.turn_id is not None
+    await conversations.save_messages(
+        conversation2,
+        [{"role": "user", "content": "Monday please", "_cp_message_id": started2.turn_id}],
+        frozen_clock.now(),
+    )
+    await conversations.finish_turn(
+        started2.turn_id,
+        ChatResponse(
+            conversation_id=conversation2,
+            message_id="m-booked",
+            assistant_message="Booked.",
+            events=[Event(type="booking_created")],
+        ),
+    )
+    with pytest.raises(ServiceError):
+        await conversations.prepare_regeneration(conversation2, "m-booked")
+
+
+@pytest.mark.asyncio
+async def test_prepare_regeneration_refuses_to_drop_a_presented_summary(
+    db: DBHarness, frozen_clock: FrozenClock
+) -> None:
+    import uuid
+
+    from app.contracts import ChatResponse, DraftStatus
+    from app.db.models import BookingDraft
+    from app.services.errors import ServiceError
+
+    _session, conversation_id = await _new_conversation(db, frozen_clock)
+    conversations = ConversationService(db.session_factory, frozen_clock)
+    started = await conversations.start_turn(
+        conversation_id, "m-summary", chat_request_hash("draft-1", 1)
+    )
+    assert started.turn_id is not None
+    messages = [
+        {"role": "user", "content": "What are the hours?", "_cp_message_id": started.turn_id},
+        {"role": "assistant", "content": "Booking summary:", "_cp_message_id": "summary-msg"},
+    ]
+    await conversations.save_messages(conversation_id, messages, frozen_clock.now())
+    await conversations.finish_turn(
+        started.turn_id,
+        ChatResponse(
+            conversation_id=conversation_id,
+            message_id="m-summary",
+            assistant_message="Booking summary:",
+        ),
+    )
+    with db.session_factory() as session:
+        session.add(
+            BookingDraft(
+                id=str(uuid.uuid4()),
+                conversation_id=conversation_id,
+                version=2,
+                status=DraftStatus.AWAITING_CONFIRMATION.value,
+                doctor_id="D101",
+                treatment_id="T001",
+                local_date="2026-11-05",
+                local_time="09:00",
+                timezone="America/New_York",
+                confirmation_message_id="summary-msg",
+                confirmation_version=2,
+                created_at=frozen_clock.now(),
+                updated_at=frozen_clock.now(),
+            )
+        )
+        session.commit()
+
+    with pytest.raises(ServiceError):
+        await conversations.prepare_regeneration(conversation_id, "m-summary")

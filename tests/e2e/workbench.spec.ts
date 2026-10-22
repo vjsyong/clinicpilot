@@ -42,6 +42,7 @@ type ChatResponse = {
   conversation_id: string;
   message_id: string;
   assistant_message: string;
+  sources: Array<{ source_file: string; record_id: string }>;
   booking_draft: {
     draft_id: string;
     version: number;
@@ -129,15 +130,46 @@ async function showBookings(page: Page): Promise<void> {
   await showView(page, "bookings");
 }
 
+async function conversationId(page: Page): Promise<string | null> {
+  return page.evaluate(() => {
+    try {
+      return localStorage.getItem('clinicpilot.conversation');
+    } catch {
+      return null;
+    }
+  });
+}
+
+async function transcript(page: Page, id: string): Promise<{
+  turns: Array<{
+    client_message_id: string;
+    status: string;
+    assistant: string | null;
+    sources: ChatResponse['sources'];
+    booking_draft: ChatResponse['booking_draft'];
+    events: ChatResponse['events'];
+  }>;
+}> {
+  const response = await page.request.get(apiPath(`api/conversations/${id}`));
+  expect(response.status()).toBe(200);
+  return (await response.json()) as {
+    turns: Array<{
+      client_message_id: string;
+      status: string;
+      assistant: string | null;
+      sources: ChatResponse['sources'];
+      booking_draft: ChatResponse['booking_draft'];
+      events: ChatResponse['events'];
+    }>;
+  };
+}
+
 async function sendMessage(page: Page, text: string): Promise<{ status: number; body: ChatResponse }> {
+  const beforeId = await conversationId(page);
+  const beforeTurns = beforeId ? (await transcript(page, beforeId)).turns.length : 0;
+
   const composer = messageBox(page);
   await composer.fill(text);
-
-  const responsePromise = page.waitForResponse(
-    (response) =>
-      response.request().method() === 'POST' &&
-      new URL(response.url()).pathname === apiPath('api/chat'),
-  );
 
   const button = sendButton(page);
   if ((await button.count()) > 0 && (await button.isVisible())) {
@@ -146,9 +178,34 @@ async function sendMessage(page: Page, text: string): Promise<{ status: number; 
     await composer.press('Enter');
   }
 
-  const response = await responsePromise;
-  const body = (await response.json()) as ChatResponse;
-  return { status: response.status(), body };
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const id = await conversationId(page);
+    if (id) {
+      const data = await transcript(page, id);
+      if (data.turns.length > beforeTurns) {
+        const last = data.turns[data.turns.length - 1];
+        if (last.status === 'completed' && last.assistant) {
+          return {
+            status: 200,
+            body: {
+              conversation_id: id,
+              message_id: last.client_message_id,
+              assistant_message: last.assistant,
+              sources: last.sources,
+              booking_draft: last.booking_draft,
+              events: last.events,
+            },
+          };
+        }
+        if (last.status === 'failed') {
+          throw new Error(`chat turn failed for: ${text}`);
+        }
+      }
+    }
+    await page.waitForTimeout(250);
+  }
+  throw new Error(`chat turn did not complete for: ${text}`);
 }
 
 async function listBookings(page: Page): Promise<Booking[]> {
@@ -352,4 +409,75 @@ test('logout revokes the browser session', async ({ page }) => {
 
   const after = await page.request.get(apiPath('api/bookings'));
   expect(after.status()).toBe(401);
+});
+
+test('assistant citations, source inspector, and saved history', async ({ page }) => {
+  await login(page);
+  await page.getByTestId('new-conversation').first().click();
+  await expect(page.getByTestId('chat-input')).toBeVisible();
+
+  const hours = await sendMessage(page, "What are C001's hours?");
+  expect(hours.status).toBe(200);
+  expect(hours.body.sources.map((source) => source.record_id)).toContain('C001');
+
+  const assistant = page.getByTestId('message-assistant').last();
+  await expect(assistant).toContainText('Operating hours');
+  const source = assistant.getByTestId('source-ref').filter({ hasText: 'C001' }).first();
+  await expect(source).toBeVisible();
+  await source.click();
+  const inspector = page.getByTestId('source-inspector');
+  await expect(inspector).toBeVisible();
+  await expect(inspector).toContainText('Metro Care Health Clinic');
+  await page.getByRole('button', { name: 'Close source details' }).click();
+  await expect(inspector).not.toBeVisible();
+
+  const regenResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      new URL(response.url()).pathname === apiPath('api/chat/regenerate'),
+  );
+  await page.getByRole('button', { name: 'Regenerate reply' }).click();
+  expect((await regenResponse).status()).toBe(200);
+  await expect(page.getByTestId('message-assistant').last()).toHaveAttribute(
+    'data-streaming',
+    'false',
+    { timeout: 30_000 },
+  );
+  await expect(page.getByTestId('message-assistant').last()).toContainText('Operating hours');
+
+  await page.reload();
+  await expect(page.getByTestId('message-assistant').last()).toContainText('Operating hours');
+  await expect(page.locator('.chat-rail')).toContainText("What are C001's hours?");
+
+  await page.getByTestId('new-conversation').first().click();
+  const policy = await sendMessage(page, 'What is the cancellation policy?');
+  expect(policy.status).toBe(200);
+  await expect(page.getByTestId('message-assistant').last()).toContainText('cancellation');
+
+  await page
+    .locator('.chat-rail .t')
+    .filter({ hasText: "What are C001's hours?" })
+    .click();
+  await expect(page.getByTestId('message-assistant').last()).toContainText('Operating hours');
+
+  const policyRow = page
+    .locator('.chat-rail .arow')
+    .filter({ hasText: 'cancellation policy' });
+  await policyRow.getByRole('button', { name: /^Delete chat:/ }).click();
+  await policyRow.getByRole('button', { name: /^Confirm delete chat:/ }).click();
+  await expect(policyRow).toHaveCount(0);
+  await expect(page.locator('.chat-rail')).not.toContainText('cancellation policy');
+
+  await page.setViewportSize({ width: 393, height: 852 });
+  await page.reload();
+  await expect(page.getByTestId('chat-input')).toBeVisible();
+  const box = await page.getByTestId('chat-input').boundingBox();
+  expect(box).not.toBeNull();
+  if (box) {
+    expect(box.y + box.height).toBeLessThanOrEqual(852);
+  }
+  await page.getByRole('button', { name: 'Chat history' }).click();
+  const sheet = page.getByRole('dialog', { name: 'Chats' });
+  await expect(sheet).toBeVisible();
+  await expect(sheet).toContainText("What are C001's hours?");
 });

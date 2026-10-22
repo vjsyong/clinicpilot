@@ -55,6 +55,9 @@ describe("API client", () => {
 
     expect(API_PATHS).toEqual({
       chat: "./api/chat",
+      chatStream: "./api/chat/stream",
+      conversations: "./api/conversations",
+      knowledge: "./api/knowledge",
       bookings: "./api/bookings",
       login: "./login",
       logout: "./logout",
@@ -168,5 +171,94 @@ describe("API client", () => {
     });
 
     await expect(client.logout()).resolves.toBeUndefined();
+  });
+
+  it("lists, reads, and deletes conversations", async () => {
+    const summary = {
+      id: "conversation-1",
+      title: "Knee consultation",
+      created_at: "2026-10-22T12:00:00Z",
+      updated_at: "2026-10-22T12:00:00Z",
+      message_count: 2,
+      turn_count: 1,
+      active_turn_id: null,
+    };
+    const transcript = {
+      conversation: summary,
+      turns: [],
+      draft: null,
+    };
+    const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+      if (init?.method === "DELETE") {
+        return new Response(null, { status: 204 });
+      }
+      return jsonResponse(input === "./api/conversations" ? [summary] : transcript);
+    });
+    const client = createApiClient({ fetchImpl: fetchMock });
+
+    await expect(client.listConversations()).resolves.toEqual([summary]);
+    await expect(client.getConversation("conversation-1")).resolves.toEqual(transcript);
+    await expect(client.deleteConversation("conversation-1")).resolves.toBeUndefined();
+
+    expect(fetchMock.mock.calls.map(([url, init]) => [url, init?.method])).toEqual([
+      ["./api/conversations", "GET"],
+      ["./api/conversations/conversation-1", "GET"],
+      ["./api/conversations/conversation-1", "DELETE"],
+    ]);
+  });
+
+  it("loads knowledge records and status", async () => {
+    const record = {
+      document_id: "doctors:D104",
+      source_file: "doctors.csv",
+      record_id: "D104",
+      citation: "[doc:D104]",
+      text: "Dr. James Wilson",
+      metadata: { name: "Dr. James Wilson" },
+    };
+    const status = {
+      ready: true,
+      records: 11,
+      model: "sentence-transformers/all-MiniLM-L6-v2",
+      revision: "rev",
+    };
+    const fetchMock = vi.fn(async (input: string) =>
+      jsonResponse(input.endsWith("/status") ? status : record),
+    );
+    const client = createApiClient({ fetchImpl: fetchMock });
+
+    await expect(client.knowledgeStatus()).resolves.toEqual(status);
+    await expect(client.knowledgeRecord("doctors.csv", "D104")).resolves.toEqual(record);
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "./api/knowledge/status",
+      "./api/knowledge/doctors.csv/D104",
+    ]);
+  });
+
+  it("streams parsed chat events from the SSE endpoint", async () => {
+    const fetchMock = vi.fn(async (_input: string, _init?: RequestInit) => {
+      return new Response(
+        [
+          'event: session\ndata: {"conversation_id":"c1","turn_id":"t1","message_id":"m1"}\n\n',
+          'event: content\ndata: {"delta":"Hello"}\n\n',
+        ].join(""),
+        { status: 200, headers: { "Content-Type": "text/event-stream" } },
+      );
+    });
+    const client = createApiClient({ fetchImpl: fetchMock });
+    const events: string[] = [];
+
+    await client.streamChat(
+      buildChatRequest(null, createPendingMessage("hello", () => "m1")),
+      (event) => {
+        events.push(event.event);
+      },
+    );
+
+    expect(events).toEqual(["session", "content"]);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("./api/chat/stream");
+    expect(init?.method).toBe("POST");
+    expect(init?.headers).toMatchObject({ Accept: "text/event-stream" });
   });
 });

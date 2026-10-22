@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import itertools
+
 import pytest
 from app.retrieval.index import build_knowledge_index
 from tests.conftest import DBHarness
@@ -123,3 +125,53 @@ async def test_db_backed_index_uses_session_factory(db: DBHarness, fake_embedder
     assert len(index.documents) == 11
     results = index.search("D104")
     assert results[0].document_id == "doctors:D104"
+
+
+async def test_search_evidence_reports_channels_and_excerpt(
+    retrieval_settings, fake_embedder
+) -> None:
+    index = await _csv_index(retrieval_settings, fake_embedder)
+
+    evidence = index.search_evidence("D104")
+
+    assert evidence[0].document.document_id == "doctors:D104"
+    assert "exact" in evidence[0].channels
+    assert evidence[0].excerpt
+    assert evidence[0].score > 0
+    assert all(item.score >= next_item.score for item, next_item in itertools.pairwise(evidence))
+
+
+async def test_lexical_channel_resolves_policy_phrases(retrieval_settings, fake_embedder) -> None:
+    index = await _csv_index(retrieval_settings, fake_embedder)
+
+    evidence = index.search_evidence("cancellation policy", limit=5)
+
+    assert evidence
+    assert evidence[0].document.record_id in {"C001", "C002"}
+    assert "lexical" in evidence[0].channels
+
+
+async def test_evidence_filters_and_lookup_are_consistent(
+    retrieval_settings, fake_embedder
+) -> None:
+    index = await _csv_index(retrieval_settings, fake_embedder)
+
+    evidence = index.search_evidence("joint pain", filters={"specialty": "Orthopedics"})
+    assert [item.document.record_id for item in evidence] == ["D104"]
+    assert "lexical" in evidence[0].channels
+
+    document = index.lookup("doctors.csv", "d104")
+    assert document is not None
+    assert document.document_id == "doctors:D104"
+    assert index.lookup("doctors.csv", "D999") is None
+
+
+async def test_search_and_search_evidence_agree(retrieval_settings, fake_embedder) -> None:
+    index = await _csv_index(retrieval_settings, fake_embedder)
+
+    documents = index.search("my knee hurts", limit=5)
+    evidence = index.search_evidence("my knee hurts", limit=5)
+
+    assert [document.document_id for document in documents] == [
+        item.document.document_id for item in evidence
+    ]

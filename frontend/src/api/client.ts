@@ -1,13 +1,22 @@
+import { readSse } from "../lib/sse";
 import type {
   ApiErrorEnvelope,
   BookingView,
   BookingsEnvelope,
   ChatRequest,
   ChatResponse,
+  ChatStreamEvent,
+  ConversationSummary,
+  ConversationTranscript,
+  KnowledgeRecord,
+  KnowledgeStatus,
 } from "./types";
 
 export const API_PATHS = {
   chat: "./api/chat",
+  chatStream: "./api/chat/stream",
+  conversations: "./api/conversations",
+  knowledge: "./api/knowledge",
   bookings: "./api/bookings",
   login: "./login",
   logout: "./logout",
@@ -156,6 +165,139 @@ export function createApiClient(options: ApiClientOptions = {}) {
         "The bookings response could not be read.",
         true,
       );
+    },
+
+    async listConversations(): Promise<ConversationSummary[]> {
+      return requestJson<ConversationSummary[]>(API_PATHS.conversations, {
+        method: "GET",
+      });
+    },
+
+    async getConversation(conversationId: string): Promise<ConversationTranscript> {
+      return requestJson<ConversationTranscript>(
+        `${API_PATHS.conversations}/${encodeURIComponent(conversationId)}`,
+        { method: "GET" },
+      );
+    },
+
+    async deleteConversation(conversationId: string): Promise<void> {
+      await requestJson<void>(
+        `${API_PATHS.conversations}/${encodeURIComponent(conversationId)}`,
+        { method: "DELETE" },
+      );
+    },
+
+    async knowledgeRecord(
+      sourceFile: string,
+      recordId: string,
+    ): Promise<KnowledgeRecord> {
+      return requestJson<KnowledgeRecord>(
+        `${API_PATHS.knowledge}/${encodeURIComponent(sourceFile)}/${encodeURIComponent(recordId)}`,
+        { method: "GET" },
+      );
+    },
+
+    async knowledgeStatus(): Promise<KnowledgeStatus> {
+      return requestJson<KnowledgeStatus>(`${API_PATHS.knowledge}/status`, {
+        method: "GET",
+      });
+    },
+
+    async streamChat(
+      payload: ChatRequest,
+      onEvent: (event: ChatStreamEvent) => void,
+      signal?: AbortSignal,
+    ): Promise<void> {
+      const response = await fetchImpl(API_PATHS.chatStream, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          Accept: "text/event-stream",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+        signal,
+      });
+      if (response.status === 401) {
+        onUnauthorized();
+        throw new ApiError(
+          401,
+          "unauthorized",
+          "Your session has expired. Sign in again.",
+          false,
+        );
+      }
+      if (!response.ok) {
+        throw await readError(response);
+      }
+      await readSse(response, onEvent);
+    },
+
+    async attachChatRun(
+      turnId: string,
+      onEvent: (event: ChatStreamEvent) => void,
+      signal?: AbortSignal,
+    ): Promise<void> {
+      const response = await fetchImpl(
+        `${API_PATHS.chat}/runs/${encodeURIComponent(turnId)}`,
+        {
+          method: "GET",
+          credentials: "same-origin",
+          headers: { Accept: "text/event-stream" },
+          signal,
+        },
+      );
+      if (response.status === 401) {
+        onUnauthorized();
+        throw new ApiError(
+          401,
+          "unauthorized",
+          "Your session has expired. Sign in again.",
+          false,
+        );
+      }
+      if (!response.ok) {
+        throw await readError(response);
+      }
+      await readSse(response, onEvent);
+    },
+
+    async regenerateChat(
+      payload: { conversation_id: string; message_id: string },
+      onEvent: (event: ChatStreamEvent) => void,
+      signal?: AbortSignal,
+    ): Promise<void> {
+      const response = await fetchImpl(`${API_PATHS.chat}/regenerate`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          Accept: "text/event-stream",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+        signal,
+      });
+      if (response.status === 401) {
+        onUnauthorized();
+        throw new ApiError(
+          401,
+          "unauthorized",
+          "Your session has expired. Sign in again.",
+          false,
+        );
+      }
+      if (!response.ok) {
+        throw await readError(response);
+      }
+      await readSse(response, onEvent);
+    },
+
+    async stopChatRun(turnId: string): Promise<boolean> {
+      const result = await requestJson<{ stopped: boolean }>(
+        `${API_PATHS.chat}/runs/${encodeURIComponent(turnId)}/stop`,
+        { method: "POST" },
+      );
+      return result.stopped;
     },
 
     async logout(): Promise<void> {

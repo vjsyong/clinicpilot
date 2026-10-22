@@ -35,8 +35,8 @@ uv run --project backend mypy backend/app
 step "Backend tests"
 uv run --project backend pytest backend/tests -q
 
-step "Frontend lint, type check and build"
-(cd frontend && npm run lint && npm run typecheck && npm run build)
+step "Frontend lint, type check, tests and build"
+(cd frontend && npm run lint && npm run typecheck && npm test && npm run build)
 
 step "Design-system strict lint"
 triage_lint="${TRIAGE_LINT:-}"

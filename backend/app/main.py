@@ -148,6 +148,9 @@ def create_app(
         try:
             yield
         finally:
+            runs = getattr(app.state, "chat_runs", None)
+            if runs is not None:
+                await runs.shutdown()
             engine.dispose()
 
     app = FastAPI(

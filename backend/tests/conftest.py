@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -26,11 +26,22 @@ ORIGIN = {"Origin": "http://testserver"}
 
 @dataclass
 class FakeIndex:
+    documents: list[Any] = field(default_factory=list)
+
     def ready(self) -> bool:
         return True
 
     def search(self, query: str, limit: int = 5, filters: Any = None) -> list[Any]:
         return []
+
+    def search_evidence(self, query: str, limit: int = 5, filters: Any = None) -> list[Any]:
+        return []
+
+    def lookup(self, source_file: str, record_id: str) -> Any:
+        for document in self.documents:
+            if document.source_file == source_file and document.record_id == record_id:
+                return document
+        return None
 
     async def prewarm(self) -> None:
         return None
@@ -40,7 +51,7 @@ class FakeController:
     def __init__(self) -> None:
         self.calls: list[TurnContext] = []
 
-    async def handle_turn(self, ctx: TurnContext) -> TurnResult:
+    async def handle_turn(self, ctx: TurnContext, emit: Any = None) -> TurnResult:
         self.calls.append(ctx)
         return TurnResult(assistant_message=f"echo: {ctx.user_text}")
 

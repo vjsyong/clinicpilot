@@ -33,9 +33,12 @@ Browser ── HTTPS ── Cloudflare Tunnel
   proposes; the application validates patient identity, draft versions,
   confirmation, idempotency, and booking success.
 - **Retrieval:** `sentence-transformers/all-MiniLM-L6-v2` (pinned revision),
-  in-memory cosine similarity, one document per clinic/doctor/treatment row.
+  in-memory hybrid retrieval over one document per clinic/doctor/treatment row:
+  exact ID/name matches + BM25 + cosine, fused with reciprocal rank fusion.
 - **Frontend:** React + TypeScript + Vite, built to relative URLs so the runtime
-  prefix is never baked into the image.
+  prefix is never baked into the image. The Assistant tab streams turns, keeps
+  saved conversations, renders safe markdown with `[doc:...]` citations, and
+  exposes a source inspector and tool trace using the vendored Triage system.
 - **Ingress:** Cloudflare Tunnel; the application handles the prefix itself.
   Wrong-prefix requests are `404`.
 
@@ -178,6 +181,12 @@ CLINICPILOT_E2E_BASE_URL=http://127.0.0.1:8000 \
 CLINICPILOT_E2E_PREFIX=/ci-clinicpilot-0123456789/ \
 CLINICPILOT_E2E_PASSWORD=clinicpilot-ci-password \
 E2E_STATE_FILE=/tmp/clinicpilot-e2e/state.json npm run test:e2e:functional
+```
+
+Retrieval evaluation (local embedder, no API key):
+
+```bash
+uv run --project backend python backend/evals/retrieval.py
 ```
 
 Live-model evaluation (requires a DeepSeek key; never run in PR CI):

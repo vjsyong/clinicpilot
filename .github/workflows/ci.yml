@@ -78,6 +78,10 @@ jobs:
         working-directory: frontend
         run: npm run typecheck
 
+      - name: Frontend tests
+        working-directory: frontend
+        run: npm test
+
       - name: Build
         working-directory: frontend
         run: npm run build
@@ -238,6 +242,7 @@ jobs:
         run: |
           set -euo pipefail
           npm ci
+          npm run typecheck:e2e
           npx playwright install --with-deps chromium
 
       - name: Browser and API acceptance suite

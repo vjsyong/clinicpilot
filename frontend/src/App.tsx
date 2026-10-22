@@ -1,19 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { API_PATHS, ApiError, api } from "./api/client";
-import type { BookingDraftView, BookingView } from "./api/types";
+import type { BookingView } from "./api/types";
 import { AppHeader } from "./components/AppHeader";
 import { BookingsPanel } from "./components/BookingsPanel";
 import { ChatPanel } from "./components/ChatPanel";
-import {
-  buildChatRequest,
-  createPendingMessage,
-  markFailed,
-  toRetry,
-  type ChatMessage,
-  type FailedMessage,
-  type PendingMessage,
-} from "./lib/chat";
+import { useAssistant } from "./hooks/useAssistant";
 import { readRuntimeConfig } from "./lib/config";
 
 type WorkbenchView = "chat" | "bookings";
@@ -35,65 +27,9 @@ function describeError(error: unknown): string {
 export function App() {
   const config = useMemo(() => readRuntimeConfig(), []);
   const [view, setView] = useState<WorkbenchView>(initialView);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [input, setInput] = useState("");
-  const [inFlight, setInFlight] = useState(false);
-  const [failed, setFailed] = useState<FailedMessage | null>(null);
-  const [chatError, setChatError] = useState<string | null>(null);
-  const [draft, setDraft] = useState<BookingDraftView | null>(null);
-  const [bookingSuccess, setBookingSuccess] = useState<string | null>(null);
   const [bookings, setBookings] = useState<BookingView[]>([]);
   const [bookingsLoading, setBookingsLoading] = useState(true);
   const [bookingsError, setBookingsError] = useState<string | null>(null);
-
-  const conversationIdRef = useRef<string | null>(null);
-  const inFlightRef = useRef(false);
-  const transcriptRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    document.title = config.appName;
-  }, [config.appName]);
-
-  useEffect(() => {
-    const transcript = transcriptRef.current;
-    if (!transcript) {
-      return;
-    }
-    if (messages.length === 0) {
-      transcript.scrollTop = 0;
-      return;
-    }
-    transcript.scrollTop = transcript.scrollHeight;
-  }, [messages, inFlight, draft, bookingSuccess, chatError, view]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    void (async () => {
-      try {
-        const loaded = await api.listBookings();
-        if (!cancelled) {
-          setBookings(loaded);
-          setBookingsError(null);
-        }
-      } catch (error) {
-        if (
-          !cancelled &&
-          !(error instanceof ApiError && error.status === 401)
-        ) {
-          setBookingsError(describeError(error));
-        }
-      } finally {
-        if (!cancelled) {
-          setBookingsLoading(false);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const refreshBookings = useCallback(async () => {
     setBookingsLoading(true);
@@ -111,120 +47,36 @@ export function App() {
     }
   }, []);
 
-  const deliver = useCallback(
-    async (message: PendingMessage) => {
-      setInFlight(true);
+  const assistant = useAssistant({ onBookingCreated: refreshBookings });
+
+  useEffect(() => {
+    document.title = config.appName;
+  }, [config.appName]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
       try {
-        const response = await api.sendChat(
-          buildChatRequest(conversationIdRef.current, message),
-        );
-
-        conversationIdRef.current = response.conversation_id;
-        setMessages((current) => [
-          ...current.map((item) =>
-            item.kind === "user" && item.messageId === message.messageId
-              ? { ...item, status: "sent" as const }
-              : item,
-          ),
-          {
-            kind: "assistant",
-            messageId: `assistant-${response.message_id}`,
-            text: response.assistant_message,
-            sources: response.sources ?? [],
-          },
-        ]);
-        setDraft(response.booking_draft ?? null);
-        setFailed(null);
-        setChatError(null);
-
-        const events = response.events ?? [];
-        if (events.some((event) => event.type === "booking_created")) {
-          const created =
-            events.find((event) => event.type === "booking_created" && event.booking)
-              ?.booking ?? null;
-          setBookingSuccess(
-            created
-              ? `Appointment ${created.booking_id} confirmed for ${created.local_date} at ${created.local_time} (${created.timezone}).`
-              : "Appointment confirmed.",
-          );
-          void refreshBookings();
+        const loaded = await api.listBookings();
+        if (!cancelled) {
+          setBookings(loaded);
+          setBookingsError(null);
         }
       } catch (error) {
-        if (error instanceof ApiError && error.status === 401) {
-          return;
+        if (!cancelled && !(error instanceof ApiError && error.status === 401)) {
+          setBookingsError(describeError(error));
         }
-        const failedMessage = markFailed(message, describeError(error));
-        setMessages((current) =>
-          current.map((item) =>
-            item.kind === "user" && item.messageId === message.messageId
-              ? { ...item, status: "failed" as const }
-              : item,
-          ),
-        );
-        setFailed(failedMessage);
-        setChatError(failedMessage.errorMessage);
       } finally {
-        inFlightRef.current = false;
-        setInFlight(false);
+        if (!cancelled) {
+          setBookingsLoading(false);
+        }
       }
-    },
-    [refreshBookings],
-  );
+    })();
 
-  const send = useCallback(() => {
-    const text = input.trim();
-    if (text.length === 0 || inFlightRef.current) {
-      return;
-    }
-
-    inFlightRef.current = true;
-    const message = createPendingMessage(text);
-    setInput("");
-    setFailed(null);
-    setChatError(null);
-    setMessages((current) => [
-      ...current,
-      {
-        kind: "user",
-        messageId: message.messageId,
-        text: message.text,
-        status: "sending",
-      },
-    ]);
-    void deliver(message);
-  }, [deliver, input]);
-
-  const retry = useCallback(() => {
-    if (!failed || inFlightRef.current) {
-      return;
-    }
-
-    inFlightRef.current = true;
-    const message = toRetry(failed);
-    setFailed(null);
-    setChatError(null);
-    setMessages((current) =>
-      current.map((item) =>
-        item.kind === "user" && item.messageId === message.messageId
-          ? { ...item, status: "sending" as const }
-          : item,
-      ),
-    );
-    void deliver(message);
-  }, [deliver, failed]);
-
-  const newConversation = useCallback(() => {
-    if (inFlightRef.current) {
-      return;
-    }
-
-    conversationIdRef.current = null;
-    setMessages([]);
-    setDraft(null);
-    setBookingSuccess(null);
-    setFailed(null);
-    setChatError(null);
-    setInput("");
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const logout = useCallback(async () => {
@@ -264,7 +116,7 @@ export function App() {
               showView("chat");
             }}
           >
-            Chat
+            Assistant
           </button>
           <button
             type="button"
@@ -290,9 +142,10 @@ export function App() {
       </aside>
 
       <div className="main">
-        <main className="content" id="main">
+        <main className="content" id="main" data-view={view}>
           <AppHeader
             appName={config.appName}
+            compact={view === "chat"}
             onLogout={() => {
               void logout();
             }}
@@ -312,7 +165,7 @@ export function App() {
                   showView("chat");
                 }}
               >
-                Chat
+                Assistant
               </button>
               <button
                 id="tab-bookings"
@@ -339,18 +192,32 @@ export function App() {
           >
             {view === "chat" ? (
               <ChatPanel
-                messages={messages}
-                input={input}
-                inFlight={inFlight}
-                error={chatError}
-                canRetry={failed !== null}
-                draft={draft}
-                success={bookingSuccess}
-                transcriptRef={transcriptRef}
-                onInputChange={setInput}
-                onSend={send}
-                onRetry={retry}
-                onNewConversation={newConversation}
+                sessions={assistant.sessions}
+                activeId={assistant.activeId}
+                messages={assistant.messages}
+                draft={assistant.draft}
+                input={assistant.input}
+                inFlight={assistant.inFlight}
+                canRetry={assistant.failed !== null}
+                error={assistant.error}
+                loading={assistant.loading}
+                historyError={assistant.historyError}
+                onInputChange={assistant.setInput}
+                onSend={assistant.send}
+                onPrompt={assistant.sendText}
+                onStop={assistant.stop}
+                onRetry={assistant.retry}
+                onRegenerate={assistant.regenerate}
+                onNew={assistant.newConversation}
+                onLogout={() => {
+                  void logout();
+                }}
+                onSelect={(id) => {
+                  void assistant.selectConversation(id);
+                }}
+                onDelete={(id) => {
+                  void assistant.deleteConversation(id);
+                }}
               />
             ) : (
               <BookingsPanel

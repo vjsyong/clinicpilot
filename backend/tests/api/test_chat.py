@@ -118,7 +118,7 @@ def test_provider_error_maps_to_retryable_502(harness: AppHarness, login) -> Non
     assert login(harness.client).status_code == 303
 
     class FailingController:
-        async def handle_turn(self, ctx: Any) -> Any:
+        async def handle_turn(self, ctx: Any, emit: Any = None) -> Any:
             raise ProviderError("upstream unavailable")
 
     harness.app.state.controller = FailingController()
@@ -133,7 +133,7 @@ def test_unexpected_error_maps_to_internal_error(harness: AppHarness, login) -> 
     assert login(harness.client).status_code == 303
 
     class ExplodingController:
-        async def handle_turn(self, ctx: Any) -> Any:
+        async def handle_turn(self, ctx: Any, emit: Any = None) -> Any:
             raise RuntimeError("secret internals should not leak")
 
     harness.app.state.controller = ExplodingController()

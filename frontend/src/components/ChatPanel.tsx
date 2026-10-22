@@ -1,216 +1,330 @@
-import type { KeyboardEvent, RefObject } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { BookingDraftView, SourceRef } from "../api/types";
-import type { ChatMessage } from "../lib/chat";
+import type {
+  BookingDraftView,
+  ConversationSummary,
+  SourceRef,
+} from "../api/types";
+import type { AssistantChatMessage, ChatMessage } from "../lib/chat";
 import { BookingDraftCard } from "./BookingDraftCard";
+import { ChatMessageView } from "./ChatMessage";
+import { ChatSessionRail } from "./ChatSessionRail";
+import { Composer } from "./Composer";
+import { MobileHistorySheet } from "./MobileHistorySheet";
+import { SourceInspector } from "./SourceInspector";
 
 interface ChatPanelProps {
+  sessions: ConversationSummary[];
+  activeId: string | null;
   messages: ChatMessage[];
+  draft: BookingDraftView | null;
   input: string;
   inFlight: boolean;
-  error: string | null;
   canRetry: boolean;
-  draft: BookingDraftView | null;
-  success: string | null;
-  transcriptRef: RefObject<HTMLDivElement | null>;
+  error: string | null;
+  loading: boolean;
+  historyError: string | null;
   onInputChange: (value: string) => void;
   onSend: () => void;
+  onPrompt: (text: string) => void;
+  onStop: () => void;
   onRetry: () => void;
-  onNewConversation: () => void;
+  onRegenerate: (message: AssistantChatMessage) => void;
+  onNew: () => void;
+  onLogout: () => void;
+  onSelect: (id: string) => void;
+  onDelete: (id: string) => void;
 }
 
-function userStatus(status: "sending" | "sent" | "failed"): string {
-  switch (status) {
-    case "sending":
-      return "Sending…";
-    case "failed":
-      return "Not sent";
-    default:
-      return "Sent";
-  }
-}
-
-function SourceList({ sources }: { sources: SourceRef[] }) {
-  if (sources.length === 0) {
-    return null;
-  }
-
-  return (
-    <div className="tools-list" role="list" aria-label="Sources">
-      {sources.map((source, index) => (
-        <span
-          className="tool-chip"
-          role="listitem"
-          data-testid="source-ref"
-          key={`${source.source_file}:${source.record_id}:${index}`}
-        >
-          {source.source_file}:{source.record_id}
-        </span>
-      ))}
-    </div>
-  );
-}
+const SUGGESTIONS = [
+  "What are C001's hours?",
+  "Who treats knee pain?",
+  "Book a knee consultation",
+  "Show my appointments",
+];
 
 export function ChatPanel({
+  sessions,
+  activeId,
   messages,
+  draft,
   input,
   inFlight,
-  error,
   canRetry,
-  draft,
-  success,
-  transcriptRef,
+  error,
+  loading,
+  historyError,
   onInputChange,
   onSend,
+  onPrompt,
+  onStop,
   onRetry,
-  onNewConversation,
+  onRegenerate,
+  onNew,
+  onLogout,
+  onSelect,
+  onDelete,
 }: ChatPanelProps) {
-  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-      event.preventDefault();
-      onSend();
+  const transcriptRef = useRef<HTMLDivElement | null>(null);
+  const atBottomRef = useRef(true);
+  const [atBottom, setAtBottom] = useState(true);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [source, setSource] = useState<SourceRef | null>(null);
+
+  const scrollToBottom = useCallback(() => {
+    const transcript = transcriptRef.current;
+    if (!transcript) {
+      return;
     }
-  }
+    transcript.scrollTop = transcript.scrollHeight;
+    atBottomRef.current = true;
+    setAtBottom(true);
+  }, []);
+
+  useEffect(() => {
+    if (atBottomRef.current) {
+      scrollToBottom();
+    }
+  }, [messages, inFlight, scrollToBottom]);
+
+  const handleScroll = useCallback(() => {
+    const transcript = transcriptRef.current;
+    if (!transcript) {
+      return;
+    }
+    const distance =
+      transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight;
+    const near = distance < 80;
+    atBottomRef.current = near;
+    setAtBottom(near);
+  }, []);
+
+  const activeSession = sessions.find((session) => session.id === activeId);
+  const lastAssistant = [...messages]
+    .reverse()
+    .find((message) => message.kind === "assistant");
+  const lastAssistantId = lastAssistant?.messageId;
+  const canRegenerate =
+    lastAssistant !== undefined &&
+    !lastAssistant.streaming &&
+    !lastAssistant.events.some((event) => event.type === "booking_created") &&
+    lastAssistant.draft?.status !== "booked";
+  const hasAttachedDraft =
+    draft !== null &&
+    messages.some(
+      (message) =>
+        message.kind === "assistant" &&
+        message.draft?.draft_id === draft.draft_id &&
+        message.draft.version === draft.version,
+    );
 
   return (
-    <section className="card" id="chat-panel" aria-labelledby="chat-heading">
-      <div className="card-h">
-        <h2 id="chat-heading">Assistant</h2>
-        <button
-          className="btn small"
-          type="button"
-          data-testid="new-conversation"
-          onClick={onNewConversation}
-          disabled={inFlight}
-        >
-          New conversation
-        </button>
-      </div>
-
-      <div className="chat-flex">
-        <div
-          className="chat"
-          role="log"
-          aria-live="polite"
-          aria-relevant="additions text"
-          aria-label="Conversation transcript"
-          ref={transcriptRef}
-        >
-          {messages.length === 0 && !inFlight ? (
-            <div className="chat-empty">
-              <div className="chat-empty-title">How can we help?</div>
-              <div className="sub">
-                Ask about clinics, doctors, treatments, or book an appointment for P001.
-              </div>
-            </div>
-          ) : null}
-
-          {messages.map((message) =>
-            message.kind === "user" ? (
-              <div className="crow user" data-testid="message-user" key={message.messageId}>
-                <div className="avatar you" aria-hidden="true">
-                  You
-                </div>
-                <div className="bubble user">
-                  <div className="prose">{message.text}</div>
-                  <div className="meta">{userStatus(message.status)}</div>
-                </div>
-              </div>
-            ) : (
-              <div
-                className="crow ai"
-                data-testid="message-assistant"
-                key={message.messageId}
-              >
-                <div className="avatar ai" aria-hidden="true">
-                  AI
-                </div>
-                <div className="bubble ai">
-                  <div className="prose">{message.text}</div>
-                  <SourceList sources={message.sources} />
-                </div>
-              </div>
-            ),
-          )}
-
-          {inFlight ? (
-            <div className="crow ai">
-              <div className="avatar ai" aria-hidden="true">
-                AI
-              </div>
-              <div className="bubble ai">
-                <p className="sub" role="status">
-                  Assistant is responding…
-                </p>
-              </div>
-            </div>
-          ) : null}
-
-          {success ? (
-            <div className="msg ok" role="status" data-testid="booking-success">
-              {success}
-            </div>
-          ) : null}
-
-          {error ? (
-            <div className="msg err" role="alert" data-testid="error-banner">
-              <div className="spread">
-                <span>{error}</span>
-                <button
-                  className="btn small"
-                  type="button"
-                  data-testid="chat-retry"
-                  onClick={onRetry}
-                  disabled={!canRetry || inFlight}
-                >
-                  Retry
-                </button>
-              </div>
-            </div>
-          ) : null}
-
-          {draft ? <BookingDraftCard draft={draft} /> : null}
-        </div>
-
-        <form
-          className="composer"
-          onSubmit={(event) => {
-            event.preventDefault();
-            onSend();
-          }}
-        >
-          <label className="vh" htmlFor="chat-input">
-            Message
-          </label>
-          <textarea
-            id="chat-input"
-            data-testid="chat-input"
-            name="message"
-            rows={2}
-            value={input}
-            disabled={inFlight}
-            onChange={(event) => onInputChange(event.target.value)}
-            onKeyDown={handleKeyDown}
-            aria-describedby="chat-input-hint"
-            placeholder="Ask about clinics, treatments, or appointments…"
-          />
-          <div className="comp-row">
-            <span className="sub" id="chat-input-hint">
-              Enter sends · Shift+Enter for a new line
-            </span>
-            <span className="row">
-              <button
-                className="btn primary"
-                type="submit"
-                data-testid="chat-send"
-                disabled={inFlight || input.trim().length === 0}
-              >
-                Send
-              </button>
-            </span>
+    <section className="assistant-page" aria-labelledby="assistant-heading">
+      <div className="page-head am-head">
+        <div>
+          <h1 className="page-title" id="assistant-heading">
+            Assistant
+          </h1>
+          <div className="page-desc">
+            Grounded in the clinic knowledge base. Every search and tool step is visible.
           </div>
-        </form>
+        </div>
       </div>
+
+      <div className="chat-layout">
+        <ChatSessionRail
+          sessions={sessions}
+          activeId={activeId}
+          busy={inFlight || loading}
+          query={query}
+          onQueryChange={setQuery}
+          onNew={onNew}
+          onSelect={onSelect}
+          onDelete={onDelete}
+        />
+
+        <div className="chat-main">
+          <div className="chat-head">
+            <button
+              type="button"
+              className="iconbtn"
+              aria-label="Chat history"
+              onClick={() => {
+                setHistoryOpen(true);
+              }}
+            >
+              ☰
+            </button>
+            <div className="ch-title">{activeSession?.title ?? "Assistant"}</div>
+            <button
+              type="button"
+              className="iconbtn"
+              aria-label="New chat"
+              onClick={onNew}
+              disabled={inFlight || loading}
+            >
+              +
+            </button>
+          </div>
+
+          <div className="chat-flex">
+            <div className="jumpwrap">
+              <div
+                className="chat"
+                role="log"
+                aria-live="polite"
+                aria-relevant="additions text"
+                aria-label="Conversation transcript"
+                aria-busy={inFlight}
+                ref={transcriptRef}
+                onScroll={handleScroll}
+                data-testid="chat-transcript"
+              >
+                {loading && messages.length === 0 ? (
+                  <p className="sub" role="status">
+                    Loading chat…
+                  </p>
+                ) : null}
+
+                {!loading && messages.length === 0 && !inFlight ? (
+                  <div className="chat-empty">
+                    <div className="chat-empty-icon" aria-hidden="true">
+                      ✚
+                    </div>
+                    <div className="chat-empty-title">How can we help?</div>
+                    <div className="sub">
+                      Ask about clinics, doctors, treatments, or book an appointment for P001.
+                    </div>
+                    <div className="chips">
+                      {SUGGESTIONS.map((suggestion) => (
+                        <button
+                          type="button"
+                          className="chip"
+                          key={suggestion}
+                          onClick={() => {
+                            onPrompt(suggestion);
+                          }}
+                        >
+                          {suggestion}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {messages.map((message) => (
+                  <ChatMessageView
+                    key={message.messageId}
+                    message={message}
+                    onSource={setSource}
+                    onRegenerate={
+                      canRegenerate &&
+                      message.kind === "assistant" &&
+                      message.messageId === lastAssistantId
+                        ? onRegenerate
+                        : undefined
+                    }
+                  />
+                ))}
+
+                {draft && draft.status !== "booked" && !hasAttachedDraft ? (
+                  <div className="crow ai">
+                    <div className="avatar ai" aria-hidden="true">
+                      AI
+                    </div>
+                    <div className="bubble ai">
+                      <BookingDraftCard draft={draft} />
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+
+              {!atBottom ? (
+                <button
+                  type="button"
+                  className="btn small"
+                  id="jump"
+                  onClick={scrollToBottom}
+                >
+                  ↓ Jump to latest
+                </button>
+              ) : null}
+            </div>
+
+            {historyError ? (
+              <div className="msg err" role="alert">
+                {historyError}
+              </div>
+            ) : null}
+
+            {error ? (
+              <div className="msg err" role="alert" data-testid="error-banner">
+                <div className="spread">
+                  <span>{error}</span>
+                  <button
+                    className="btn small"
+                    type="button"
+                    data-testid="chat-retry"
+                    onClick={onRetry}
+                    disabled={!canRetry || inFlight}
+                  >
+                    Retry
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            <Composer
+              input={input}
+              inFlight={inFlight}
+              disabled={loading}
+              onInputChange={onInputChange}
+              onSend={onSend}
+              onStop={onStop}
+            />
+          </div>
+        </div>
+      </div>
+
+      <MobileHistorySheet
+        open={historyOpen}
+        onClose={() => {
+          setHistoryOpen(false);
+        }}
+      >
+        <ChatSessionRail
+          sessions={sessions}
+          activeId={activeId}
+          busy={inFlight || loading}
+          query={query}
+          onQueryChange={setQuery}
+          onNew={() => {
+            setHistoryOpen(false);
+            onNew();
+          }}
+          onSelect={(id) => {
+            setHistoryOpen(false);
+            onSelect(id);
+          }}
+          onDelete={onDelete}
+        />
+        <div className="sheet-foot">
+          <span className="sub">
+            <span className="dot ok" aria-hidden="true" /> Patient P001 · session active
+          </span>
+          <button type="button" className="btn small" onClick={onLogout}>
+            Log out
+          </button>
+        </div>
+      </MobileHistorySheet>
+
+      <SourceInspector
+        source={source}
+        onClose={() => {
+          setSource(null);
+        }}
+      />
     </section>
   );
 }

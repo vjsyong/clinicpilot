@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Any
 
 import httpx
@@ -80,16 +80,89 @@ class DeepSeekModelClient:
         )
         raise ProviderError(PROVIDER_SAFE_ERROR)
 
+    async def stream_complete(
+        self,
+        *,
+        messages: Sequence[dict[str, Any]],
+        tools: Sequence[dict[str, Any]],
+        tool_choice: str | dict[str, Any] = "auto",
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield content, reasoning, and completed tool calls as they arrive.
+
+        Streaming is intentionally best-effort: once any text has been emitted
+        the turn is not retried, because replaying partial prose would duplicate
+        it. The application persists only the completed response.
+        """
+        sanitized = [_sanitize_message(message) for message in messages]
+        definitions = _convert_tools(tools)
+        choice = _convert_tool_choice(tool_choice)
+        request = self._request(sanitized, definitions, choice)
+        request["stream"] = True
+
+        pending: dict[int, dict[str, str]] = {}
+        try:
+            stream = await self._client.chat.completions.create(**request)
+            try:
+                async for chunk in stream:
+                    if not chunk.choices:
+                        continue
+                    choice_delta = chunk.choices[0]
+                    delta = choice_delta.delta
+                    reasoning = getattr(delta, "reasoning_content", None)
+                    if reasoning:
+                        yield {"type": "reasoning", "text": reasoning}
+                    if delta.content:
+                        yield {"type": "content", "text": delta.content}
+                    for call in delta.tool_calls or []:
+                        index = call.index if call.index is not None else 0
+                        entry = pending.setdefault(index, {"id": "", "name": "", "arguments": ""})
+                        if call.id:
+                            entry["id"] = call.id
+                        function = call.function
+                        if function is not None:
+                            if function.name:
+                                entry["name"] = function.name
+                            if function.arguments:
+                                entry["arguments"] += function.arguments
+                    if choice_delta.finish_reason:
+                        yield {
+                            "type": "done",
+                            "finish_reason": choice_delta.finish_reason,
+                        }
+            finally:
+                await stream.close()
+        except ProviderError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "DeepSeek stream failed (%s).",
+                type(exc).__name__,
+            )
+            raise ProviderError(PROVIDER_SAFE_ERROR) from None
+
+        if pending:
+            yield {
+                "type": "tool_calls",
+                "calls": [
+                    ModelToolCall(
+                        id=entry["id"] or f"tool_call_{index}",
+                        name=entry["name"] or "unknown",
+                        arguments=entry["arguments"] or "{}",
+                    )
+                    for index, entry in sorted(pending.items())
+                ],
+            }
+
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.close()
 
-    async def _complete_once(
+    def _request(
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
         tool_choice: str | dict[str, Any],
-    ) -> ModelResponse:
+    ) -> dict[str, Any]:
         request: dict[str, Any] = {
             "model": self._settings.deepseek_model,
             "messages": messages,
@@ -100,6 +173,15 @@ class DeepSeekModelClient:
         if tools:
             request["tools"] = tools
             request["tool_choice"] = tool_choice
+        return request
+
+    async def _complete_once(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        tool_choice: str | dict[str, Any],
+    ) -> ModelResponse:
+        request = self._request(messages, tools, tool_choice)
 
         response = await self._client.chat.completions.create(**request)
         if not response.choices:

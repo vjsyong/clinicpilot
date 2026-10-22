@@ -15,6 +15,7 @@ from app.contracts import (
     BookingView,
     DraftStatus,
     DraftUpdate,
+    Evidence,
     ModelResponse,
     ModelToolCall,
     ProviderError,
@@ -268,8 +269,30 @@ class FakeIndex:
         limit: int = 5,
         filters: dict[str, str] | None = None,
     ) -> list[RetrievedDocument]:
+        return [item.document for item in self.search_evidence(query, limit, filters)]
+
+    def search_evidence(
+        self,
+        query: str,
+        limit: int = 5,
+        filters: dict[str, str] | None = None,
+    ) -> list[Evidence]:
         self.calls.append((query, limit, filters))
-        return list(self.documents)
+        return [
+            Evidence(
+                document=document,
+                score=1.0,
+                channels=["dense"],
+                excerpt=document.text[:240],
+            )
+            for document in self.documents[:limit]
+        ]
+
+    def lookup(self, source_file: str, record_id: str) -> RetrievedDocument | None:
+        for document in self.documents:
+            if document.source_file == source_file and document.record_id == record_id:
+                return document
+        return None
 
     async def prewarm(self) -> None:
         return None

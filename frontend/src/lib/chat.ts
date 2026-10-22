@@ -1,4 +1,11 @@
-import type { ChatRequest, SourceRef } from "../api/types";
+import type {
+  BookingDraftView,
+  ChatEvent,
+  ChatRequest,
+  ConversationTranscript,
+  SourceRef,
+  ToolTrace,
+} from "../api/types";
 import { PATIENT_ID } from "../api/types";
 
 export interface PendingMessage {
@@ -10,19 +17,31 @@ export interface FailedMessage extends PendingMessage {
   errorMessage: string;
 }
 
-export type ChatMessage =
-  | {
-      kind: "user";
-      messageId: string;
-      text: string;
-      status: "sending" | "sent" | "failed";
-    }
-  | {
-      kind: "assistant";
-      messageId: string;
-      text: string;
-      sources: SourceRef[];
-    };
+export interface UserChatMessage {
+  kind: "user";
+  messageId: string;
+  text: string;
+  status: "sending" | "sent" | "failed";
+  createdAt?: string;
+}
+
+export interface AssistantChatMessage {
+  kind: "assistant";
+  messageId: string;
+  text: string;
+  sources: SourceRef[];
+  tools: ToolTrace[];
+  draft: BookingDraftView | null;
+  events: ChatEvent[];
+  createdAt?: string;
+  streaming?: boolean;
+  statusLabel?: string;
+  reasoning?: string;
+  error?: string;
+  stopped?: boolean;
+}
+
+export type ChatMessage = UserChatMessage | AssistantChatMessage;
 
 let fallbackCounter = 0;
 
@@ -89,4 +108,33 @@ export function buildChatRequest(
     message: message.text,
     patient_id: PATIENT_ID,
   };
+}
+
+export function messagesFromTranscript(transcript: ConversationTranscript): ChatMessage[] {
+  const messages: ChatMessage[] = [];
+  for (const turn of transcript.turns) {
+    messages.push({
+      kind: "user",
+      messageId: turn.client_message_id,
+      text: turn.user,
+      status: turn.status === "failed" ? "failed" : "sent",
+      createdAt: turn.created_at,
+    });
+    messages.push({
+      kind: "assistant",
+      messageId: `${turn.turn_id}-assistant`,
+      text: turn.assistant ?? "",
+      sources: turn.sources,
+      tools: turn.tools,
+      draft: turn.booking_draft ?? null,
+      events: turn.events,
+      createdAt: turn.created_at,
+      statusLabel: turn.status === "in_progress" ? "Still working..." : undefined,
+      error:
+        turn.status === "failed" && !turn.assistant
+          ? "This turn did not complete. Please retry."
+          : undefined,
+    });
+  }
+  return messages;
 }

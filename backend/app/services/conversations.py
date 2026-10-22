@@ -12,9 +12,21 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.contracts import PATIENT_ID, ChatResponse, ChatTurnStatus, Clock
+from app.contracts import (
+    PATIENT_ID,
+    ChatResponse,
+    ChatTurnStatus,
+    Clock,
+    ConversationSummary,
+    ConversationTranscript,
+    DraftStatus,
+    ToolTrace,
+    TranscriptTurn,
+)
 from app.db.models import BookingDraft, ChatTurn, Conversation
-from app.services.errors import NotFoundError
+from app.services.errors import NotFoundError, ServiceError
+from app.services.hashing import chat_request_hash
+from app.services.tool_summary import result_sources, tool_summary
 
 TurnOutcome = Literal["new", "replay", "conflict", "in_progress"]
 
@@ -25,6 +37,8 @@ class ConversationRecord:
     demo_session_id: int
     patient_id: str
     messages: list[dict[str, Any]]
+    created_at: datetime
+    updated_at: datetime
 
 
 @dataclass(frozen=True)
@@ -32,6 +46,14 @@ class TurnStart:
     outcome: TurnOutcome
     turn_id: str | None = None
     response: ChatResponse | None = None
+
+
+@dataclass(frozen=True)
+class PreparedRegeneration:
+    conversation_id: str
+    turn_id: str
+    client_message_id: str
+    user_text: str
 
 
 class ConversationService:
@@ -77,6 +99,8 @@ class ConversationService:
                 demo_session_id=conversation.demo_session_id,
                 patient_id=conversation.patient_id,
                 messages=_decode_messages(conversation.messages_json),
+                created_at=conversation.created_at,
+                updated_at=conversation.updated_at,
             )
         finally:
             session.close()
@@ -109,6 +133,167 @@ class ConversationService:
         if record is None:
             raise NotFoundError("Conversation not found.")
         return list(record.messages)
+
+    async def list_conversations(
+        self, demo_session_id: int | str, limit: int = 50
+    ) -> list[ConversationSummary]:
+        session = self._session_factory()
+        try:
+            conversations = session.scalars(
+                select(Conversation)
+                .where(Conversation.demo_session_id == int(demo_session_id))
+                .order_by(Conversation.updated_at.desc())
+                .limit(max(1, min(limit, 100)))
+            ).all()
+            return [_summary(session, conversation) for conversation in conversations]
+        finally:
+            session.close()
+
+    async def prepare_regeneration(
+        self, conversation_id: str, expected_message_id: str
+    ) -> PreparedRegeneration | None:
+        """Trim the last assistant reply and start a fresh turn for the same user message.
+
+        Refuses confirmation turns and turns that already created a booking so a
+        regenerate can never repeat a write or bypass the confirmation boundary.
+        """
+        from app.agent.controller import is_confirmation_phrase
+
+        session = self._session_factory()
+        try:
+            conversation = session.get(Conversation, conversation_id)
+            if conversation is None:
+                return None
+            messages = _decode_messages(conversation.messages_json)
+            last_user_index = -1
+            for index, message in enumerate(messages):
+                if message.get("role") == "user":
+                    last_user_index = index
+            if last_user_index < 0:
+                return None
+            user_message = messages[last_user_index]
+            user_text = str(user_message.get("content") or "").strip()
+            if not user_text:
+                return None
+            if is_confirmation_phrase(user_text):
+                raise ServiceError(
+                    "Confirmation turns cannot be regenerated.",
+                    code="conflict",
+                    status_code=409,
+                )
+            last_assistant = next(
+                (
+                    message
+                    for message in reversed(messages[last_user_index + 1 :])
+                    if message.get("role") == "assistant"
+                ),
+                None,
+            )
+            presented_draft = session.scalar(
+                select(BookingDraft)
+                .where(
+                    BookingDraft.conversation_id == conversation_id,
+                    BookingDraft.status == DraftStatus.AWAITING_CONFIRMATION.value,
+                    BookingDraft.confirmation_message_id.is_not(None),
+                )
+                .order_by(BookingDraft.created_at.desc(), BookingDraft.id.desc())
+                .limit(1)
+            )
+            if (
+                last_assistant is not None
+                and presented_draft is not None
+                and presented_draft.confirmation_message_id == last_assistant.get("_cp_message_id")
+            ):
+                raise ServiceError(
+                    "The current booking summary cannot be regenerated. Ask for it again.",
+                    code="conflict",
+                    status_code=409,
+                )
+            old_turn_id = user_message.get("_cp_message_id")
+            old_turn = session.get(ChatTurn, old_turn_id) if old_turn_id else None
+            if old_turn is not None and old_turn.client_message_id != expected_message_id:
+                raise ServiceError(
+                    "Only the latest reply can be regenerated.",
+                    code="conflict",
+                    status_code=409,
+                )
+            if old_turn is not None and old_turn.status == ChatTurnStatus.IN_PROGRESS.value:
+                raise ServiceError(
+                    "This reply is still being generated.",
+                    code="turn_in_progress",
+                    status_code=409,
+                    retryable=True,
+                )
+            if old_turn is not None and old_turn.response_json:
+                response = ChatResponse.model_validate_json(old_turn.response_json)
+                if any(event.type == "booking_created" for event in response.events):
+                    raise ServiceError(
+                        "A completed booking cannot be regenerated.",
+                        code="conflict",
+                        status_code=409,
+                    )
+            trimmed = messages[: last_user_index + 1]
+        finally:
+            session.close()
+
+        client_message_id = (
+            old_turn.client_message_id if old_turn is not None else f"regen-{uuid.uuid4().hex}"
+        )
+        if old_turn is not None:
+            cleanup = self._session_factory()
+            try:
+                previous = cleanup.get(ChatTurn, old_turn.id)
+                if previous is not None:
+                    cleanup.delete(previous)
+                    cleanup.commit()
+            except Exception:
+                cleanup.rollback()
+                raise
+            finally:
+                cleanup.close()
+        started = await self.start_turn(
+            conversation_id,
+            client_message_id,
+            chat_request_hash(user_text, PATIENT_ID),
+        )
+        if started.outcome != "new" or started.turn_id is None:
+            raise ServiceError(
+                "The previous reply could not be regenerated.",
+                code="conflict",
+                status_code=409,
+            )
+        trimmed[-1] = {**user_message, "_cp_message_id": started.turn_id}
+        try:
+            await self.save_messages(conversation_id, trimmed, self._clock.now())
+        except Exception:
+            await self.fail_turn(started.turn_id)
+            raise
+        return PreparedRegeneration(
+            conversation_id=conversation_id,
+            turn_id=started.turn_id,
+            client_message_id=client_message_id,
+            user_text=user_text,
+        )
+
+    async def get_transcript(self, conversation_id: str) -> ConversationTranscript | None:
+        session = self._session_factory()
+        try:
+            conversation = session.get(Conversation, conversation_id)
+            if conversation is None:
+                return None
+            messages = _decode_messages(conversation.messages_json)
+            turns = session.scalars(
+                select(ChatTurn)
+                .where(ChatTurn.conversation_id == conversation_id)
+                .order_by(ChatTurn.created_at, ChatTurn.id)
+            ).all()
+            return ConversationTranscript(
+                conversation=_summary(session, conversation),
+                turns=_transcript_turns(conversation, messages, list(turns)),
+                draft=None,
+            )
+        finally:
+            session.close()
 
     async def save_messages(
         self, conversation_id: str, messages: list[dict[str, Any]], now: datetime
@@ -205,7 +390,7 @@ class ConversationService:
         session = self._session_factory()
         try:
             turn = session.get(ChatTurn, turn_id)
-            if turn is None:
+            if turn is None or turn.status != ChatTurnStatus.IN_PROGRESS.value:
                 return
             turn.status = ChatTurnStatus.FAILED.value
             turn.response_json = None
@@ -259,3 +444,137 @@ def _classify_turn(turn: ChatTurn, request_hash: str) -> TurnStart:
             response=ChatResponse.model_validate_json(turn.response_json),
         )
     return TurnStart(outcome="new", turn_id=turn.id)
+
+
+def _summary(session: Session, conversation: Conversation) -> ConversationSummary:
+    messages = _decode_messages(conversation.messages_json)
+    active = session.scalar(
+        select(ChatTurn)
+        .where(
+            ChatTurn.conversation_id == conversation.id,
+            ChatTurn.status == ChatTurnStatus.IN_PROGRESS.value,
+        )
+        .order_by(ChatTurn.created_at.desc(), ChatTurn.id.desc())
+        .limit(1)
+    )
+    return ConversationSummary(
+        id=conversation.id,
+        title=_title(messages),
+        created_at=conversation.created_at,
+        updated_at=conversation.updated_at,
+        message_count=sum(
+            1
+            for message in messages
+            if message.get("role") in {"user", "assistant"}
+            and (message.get("content") or message.get("tool_calls"))
+        ),
+        turn_count=sum(1 for message in messages if message.get("role") == "user"),
+        active_turn_id=active.id if active is not None else None,
+    )
+
+
+def _title(messages: list[dict[str, Any]]) -> str:
+    for message in messages:
+        if message.get("role") != "user":
+            continue
+        text = _collapse(str(message.get("content") or ""))
+        if text:
+            return text[:80] + ("..." if len(text) > 80 else "")
+    return "New conversation"
+
+
+def _collapse(value: str) -> str:
+    return " ".join(value.split())
+
+
+def _transcript_turns(
+    conversation: Conversation,
+    messages: list[dict[str, Any]],
+    turns: list[ChatTurn],
+) -> list[TranscriptTurn]:
+    by_id = {turn.id: turn for turn in turns}
+    result: list[TranscriptTurn] = []
+    current: TranscriptTurn | None = None
+    tool_calls: dict[str, ToolTrace] = {}
+
+    for message in messages:
+        role = message.get("role")
+        if role == "user":
+            turn_id = str(message.get("_cp_message_id") or f"legacy-{len(result) + 1}")
+            record = by_id.get(turn_id)
+            current = TranscriptTurn(
+                turn_id=turn_id,
+                client_message_id=record.client_message_id if record else turn_id,
+                user=str(message.get("content") or ""),
+                status=record.status if record else ChatTurnStatus.COMPLETED.value,
+                created_at=record.created_at if record else conversation.created_at,
+            )
+            result.append(current)
+            tool_calls = {}
+            continue
+        if current is None:
+            continue
+        if role == "assistant":
+            calls = message.get("tool_calls")
+            if isinstance(calls, list):
+                for call in calls:
+                    if not isinstance(call, dict):
+                        continue
+                    function = call.get("function")
+                    function = function if isinstance(function, dict) else {}
+                    call_id = str(call.get("id") or "")
+                    trace = ToolTrace(
+                        id=call_id or None,
+                        name=str(function.get("name") or "tool"),
+                        args=_parse_object(function.get("arguments")),
+                    )
+                    current.tools.append(trace)
+                    if call_id:
+                        tool_calls[call_id] = trace
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                current.assistant = content.strip()
+        elif role == "tool":
+            call_id = str(message.get("tool_call_id") or "")
+            pending = tool_calls.get(call_id)
+            if pending is None:
+                pending = ToolTrace(
+                    id=call_id or None,
+                    name=str(message.get("name") or "tool"),
+                )
+                current.tools.append(pending)
+                if call_id:
+                    tool_calls[call_id] = pending
+            payload = _parse_object(message.get("content"))
+            pending.ok = bool(payload.get("ok", True))
+            pending.summary = tool_summary(pending.name, payload)
+            pending.sources = result_sources(payload)
+
+    for turn in result:
+        record = by_id.get(turn.turn_id)
+        if record is None:
+            continue
+        turn.status = record.status
+        if not record.response_json:
+            continue
+        try:
+            response = ChatResponse.model_validate_json(record.response_json)
+        except ValueError:
+            continue
+        turn.assistant = response.assistant_message
+        turn.sources = response.sources
+        turn.booking_draft = response.booking_draft
+        turn.events = response.events
+    return result
+
+
+def _parse_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        decoded = json.loads(value)
+    except (TypeError, ValueError):
+        return {}
+    return dict(decoded) if isinstance(decoded, dict) else {}

@@ -5,6 +5,7 @@ import {
   createMessageId,
   createPendingMessage,
   markFailed,
+  messagesFromTranscript,
   toRetry,
 } from "../src/lib/chat";
 
@@ -54,5 +55,57 @@ describe("chat request helpers", () => {
     expect(buildChatRequest("conversation-1", message).conversation_id).toBe(
       "conversation-1",
     );
+  });
+});
+
+describe("transcript mapping", () => {
+  it("maps turns into user and assistant messages with evidence", () => {
+    const messages = messagesFromTranscript({
+      conversation: {
+        id: "c1",
+        title: "Knee consultation",
+        created_at: "2026-10-22T12:00:00Z",
+        updated_at: "2026-10-22T12:00:00Z",
+        message_count: 2,
+        turn_count: 1,
+        active_turn_id: null,
+      },
+      turns: [
+        {
+          turn_id: "t1",
+          client_message_id: "m1",
+          user: "My knee hurts",
+          status: "completed",
+          created_at: "2026-10-22T12:00:00Z",
+          assistant: "Dr. Wilson can help.",
+          sources: [{ source_file: "doctors.csv", record_id: "D104" }],
+          booking_draft: null,
+          tools: [
+            {
+              id: "call-1",
+              name: "search_knowledge",
+              args: { query: "knee" },
+              ok: true,
+              summary: "2 sources",
+              sources: [{ source_file: "doctors.csv", record_id: "D104" }],
+            },
+          ],
+          events: [],
+        },
+      ],
+      draft: null,
+    });
+
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toMatchObject({ kind: "user", messageId: "m1" });
+    expect(messages[1]).toMatchObject({
+      kind: "assistant",
+      messageId: "t1-assistant",
+      text: "Dr. Wilson can help.",
+      sources: [{ source_file: "doctors.csv", record_id: "D104" }],
+    });
+    if (messages[1].kind === "assistant") {
+      expect(messages[1].tools[0].summary).toBe("2 sources");
+    }
   });
 });

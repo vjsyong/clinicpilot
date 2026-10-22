@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
@@ -11,33 +9,15 @@ from fastapi.encoders import jsonable_encoder
 from starlette.responses import JSONResponse, Response
 
 from app.api.deps import get_clock, get_settings, require_api_session, require_patient
-from app.contracts import (
-    PATIENT_ID,
-    ChatRequest,
-    ChatResponse,
-    ProviderError,
-    TurnContext,
-)
+from app.api.locks import conversation_lock
+from app.contracts import ChatRequest
 from app.db.models import DemoSession
+from app.services.chat_turn import execute_turn
 from app.services.conversations import ConversationService
 from app.services.errors import NotFoundError, ServiceError
 from app.services.hashing import chat_request_hash
 
-logger = logging.getLogger("clinicpilot.chat")
-
 router = APIRouter()
-
-
-def _lock_for(request: Request, conversation_id: str) -> asyncio.Lock:
-    locks = getattr(request.app.state, "conversation_locks", None)
-    if not isinstance(locks, dict):
-        locks = {}
-        request.app.state.conversation_locks = locks
-    lock = locks.get(conversation_id)
-    if not isinstance(lock, asyncio.Lock):
-        lock = asyncio.Lock()
-        locks[conversation_id] = lock
-    return lock
 
 
 @router.post("/api/chat")
@@ -81,46 +61,23 @@ async def chat(
 
     assert started.turn_id is not None
     turn_id = started.turn_id
-    lock = _lock_for(request, conversation_id)
+    lock = conversation_lock(request, conversation_id)
     async with lock:
-        try:
-            controller = getattr(request.app.state, "controller", None)
-            if controller is None:
-                raise RuntimeError("Agent controller is not configured")
-            result = await controller.handle_turn(
-                TurnContext(
-                    conversation_id=conversation_id,
-                    turn_id=turn_id,
-                    demo_session_id=str(demo_session.id),
-                    patient_id=PATIENT_ID,
-                    user_text=payload.message,
-                    now=get_clock(request).now(),
-                )
-            )
-            response = ChatResponse(
-                conversation_id=conversation_id,
-                message_id=payload.message_id,
-                assistant_message=result.assistant_message,
-                sources=result.sources,
-                booking_draft=result.booking_draft,
-                events=result.events,
-            )
-            await conversations.finish_turn(turn_id, response)
-            return JSONResponse(jsonable_encoder(response), status_code=200)
-        except asyncio.CancelledError:
-            await conversations.fail_turn(turn_id)
-            raise
-        except ProviderError:
-            await conversations.fail_turn(turn_id)
-            raise
-        except ServiceError:
-            await conversations.fail_turn(turn_id)
-            raise
-        except Exception:
-            await conversations.fail_turn(turn_id)
-            logger.exception("Chat turn %s failed", turn_id)
+        controller = getattr(request.app.state, "controller", None)
+        if controller is None:
             raise ServiceError(
-                "The server could not complete the request.",
+                "The agent controller is not configured.",
                 code="internal_error",
                 status_code=500,
-            ) from None
+            )
+        response = await execute_turn(
+            controller=controller,
+            conversations=conversations,
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            client_message_id=payload.message_id,
+            demo_session_id=str(demo_session.id),
+            user_text=payload.message,
+            now=get_clock(request).now(),
+        )
+        return JSONResponse(jsonable_encoder(response), status_code=200)

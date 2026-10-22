@@ -90,6 +90,54 @@ Response: `app.contracts.ChatResponse` (assistant text, source refs, canonical
 draft view or null, events). A successful booking emits:
 `{"type": "booking_created", "booking": {<BookingView>}}`.
 
+### `POST /api/chat/stream`
+
+Same `ChatRequest` body and authentication/ownership/idempotency rules as
+`POST /api/chat`, but returns `text/event-stream`. Events, in order as they
+occur:
+
+- `session`: `{conversation_id, turn_id, message_id}` (always first)
+- `status`: `{stage}` (`thinking`, `confirming`, `booking`, `booked`)
+- `reasoning`: `{delta}` when the provider emits reasoning
+- `content`: `{delta}` for streamed assistant text
+- `content_break`: paragraph boundary between tool rounds
+- `tool_start`: `{id, name, args}`
+- `tool_end`: `{id, name, ok, summary, sources}`
+- `sources`: `{sources: [SourceRef]}`
+- `draft`: `{draft: BookingDraftView}`
+- `done`: the complete `ChatResponse`
+- `error`: `{code, message, retryable}`
+- `stopped`: the turn was cancelled
+
+Runs execute in the background. A disconnect only detaches the subscriber; the
+turn still finishes and persists its `ChatResponse`. `GET /api/chat/runs/
+{turn_id}` replays the same events and `POST /api/chat/runs/{turn_id}/stop`
+requests cooperative cancellation. Stopping fails the turn so the same message
+ID can be retried.
+
+### `POST /api/chat/regenerate`
+
+Body: `{"conversation_id": "...", "message_id": "<last user message id>"}`.
+Trims the last assistant reply, starts a fresh turn for the same user text, and
+returns the same SSE event stream. Confirmation turns and turns that already
+persist a booking are refused with `409`.
+
+### Conversation history
+
+- `GET /api/conversations` lists the authenticated demo session's chats
+  (`ConversationSummary`: title, timestamps, counts, active turn).
+- `GET /api/conversations/{id}` returns the transcript, per-turn sources,
+  booking draft, tool trace, and the current draft.
+- `DELETE /api/conversations/{id}` deletes only a conversation owned by the
+  authenticated demo session.
+
+### Knowledge inspection
+
+- `GET /api/knowledge/status` reports readiness, record count, and the pinned
+  embedding model.
+- `GET /api/knowledge/{source_file}/{record_id}` returns one hydrated knowledge
+  record for the assistant source inspector. Authenticated sessions only.
+
 ### `GET /api/bookings`
 
 Allowed with a browser session or `X-Internal-Tool-Key`. Returns P001 bookings
@@ -206,19 +254,25 @@ Confirmation rule (conservative, server-side):
 One document per row: 2 clinics, 4 doctors, 5 treatments (11 total). Every
 result carries `source_file` and `record_id`. Embeddings are
 `sentence-transformers/all-MiniLM-L6-v2` pinned at revision
-`1110a243fdf4706b3f48f1d95db1a4f5529b4d41`, normalized, cosine similarity,
-in-memory. Cache vectors with an input/model fingerprint. Prewarm before
-readiness. Private patient records never enter the shared index.
+`1110a243fdf4706b3f48f1d95db1a4f5529b4d41`, normalized, in-memory. Retrieval
+fuses three channels with reciprocal rank fusion: exact ID/name/alias matches, a
+field-weighted BM25 channel over text and metadata, and dense cosine similarity.
+Evidence results add `score`, `channels`, `excerpt`, and a `[doc:<record_id>]`
+citation for the model and UI. Cache vectors with an input/model fingerprint.
+Prewarm before readiness. Private patient records never enter the shared index.
 
 ## Frontend
 
 React + TypeScript + Vite, built to `frontend/dist`. The backend serves
-`index.html`, protected assets, and the JSON config element. Required UI:
-login, chat transcript, composer, loading state, retry with the same message
-ID, source references, booking summary, live bookings table, manual refresh,
-new conversation, logout. On `booking_created` refetch bookings. On `401`
-return to login. No optimistic booking success, no raw HTML model output, no
-duplicate concurrent sends, no secrets in build vars.
+`index.html`, protected assets, and the JSON config element. The Assistant tab
+uses the vendored Triage chat system: a saved-conversation rail (sheet on
+phones), streamed turn status, one collapsed tool/source disclosure, safe
+markdown, `[doc:<record_id>]` citations that open a source inspector, copy,
+retry, regenerate, stop, and a draft card attached to the presenting turn.
+Required UI also includes login, booking summary, live bookings table, manual
+refresh, new conversation, and logout. On `booking_created` refetch bookings.
+On `401` return to login. No optimistic booking success, no raw HTML model
+output, no duplicate concurrent sends, no secrets in build vars.
 
 ## Ownership map
 

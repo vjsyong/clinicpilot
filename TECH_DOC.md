@@ -176,7 +176,11 @@ If the model or provider fails after a confirmed write, the final answer is
 built from the persisted booking record. Generated success wording is replaced by
 canonical text; when no booking exists it becomes the deterministic
 `No booking was created` response. The phrase "booked" is never accepted from
-generated text alone.
+generated text alone. One worker serializes turns per conversation. At startup,
+`services/recovery.py` releases turns orphaned by a previous process: a turn
+with a committed booking is completed from the persisted record, otherwise it
+is failed and its authorized draft returns to confirmation so the same message
+ID can be retried.
 
 ## 6. Retrieval
 
@@ -187,11 +191,17 @@ No clinical claims are invented to improve similarity.
 
 Documents come from the database in production and directly from the CSVs in
 tests. Embeddings use `sentence-transformers/all-MiniLM-L6-v2` at the pinned
-revision, normalized, with cosine similarity in memory. Document vectors are
-cached by a SHA-256 fingerprint over model, revision, and document inputs.
-`prewarm()` builds the index before readiness is reported; search tries exact
-IDs/names first, then similarity. Results always carry source references.
-Patient records are never added to the shared knowledge index. P001's profile,
+revision, normalized, in memory. Document vectors are cached by a SHA-256
+fingerprint over model, revision, and document inputs. `prewarm()` builds the
+index before readiness is reported.
+
+Retrieval is hybrid: exact ID/name/alias matches, a field-weighted BM25 channel
+over document text and metadata, and dense cosine similarity are fused with
+reciprocal rank fusion. `search_evidence()` returns the document, score,
+channels, and an excerpt; the controller passes a `[doc:<record_id>]` citation
+to the model. The deterministic retrieval evaluation lives at
+`backend/evals/retrieval.py` (`python backend/evals/retrieval.py`). Patient
+records are never added to the shared knowledge index. P001's profile,
 allergies, and treatment history are injected into the prompt through a separate
 DB read; bookings are read through the REST tool.
 
@@ -212,12 +222,18 @@ The React workbench is built to relative asset URLs (`base: './'`) and fetches
 `#clinicpilot-config` element when it serves the authenticated index. No
 production prefix or secret is a build argument or build-time variable.
 
-The UI renders model text as text (never raw HTML), shows source references and
-the canonical draft summary, refetches bookings only after a `booking_created`
-event, supports manual refresh and new conversations, retries a failed send with
-the same message ID, prevents concurrent duplicate sends, and returns to login
-on `401`. The login page is server-rendered and uses only public design-system
-assets; application assets are served only to authenticated sessions.
+The Assistant tab uses the vendored Triage chat system. It streams turns over
+SSE (`POST /api/chat/stream`), persists conversations per authenticated demo
+session, restores the active conversation on reload, and re-attaches to an
+in-flight run. The transcript renders safe markdown (never raw HTML), shows one
+collapsed tool/source disclosure, turns `[doc:<record_id>]` citations into a
+source inspector, and attaches the canonical draft to the presenting turn.
+Copy, retry, regenerate, and stop are available; the composer is docked on
+phones and the history rail becomes a sheet. Bookings refetch only after a
+`booking_created` event. A failed send retries with the same message ID.
+Concurrent duplicate sends are prevented and `401` returns to login. The login
+page is server-rendered and uses only public design-system assets; application
+assets are served only to authenticated sessions.
 
 ## 9. Containers and CI
 
@@ -229,7 +245,7 @@ is an opt-in profile. CI uses a separate Compose project, a deterministic
 OpenAI-compatible model stub, ephemeral volumes, no production credentials, and
 always cleans up.
 
-CI jobs: backend (ruff, format, mypy, pytest), frontend (lint, typecheck, build,
+CI jobs: backend (ruff, format, mypy, pytest), frontend (lint, typecheck, tests, build,
 strict vendored Triage lint), security (Gitleaks, pip-audit, npm audit),
 container (image build, Compose smoke, Playwright, restart persistence), and an
 aggregate `quality` gate. Every external action is pinned to a full commit SHA.
@@ -277,7 +293,8 @@ Limitations:
 - In-process locks and SQLite do not scale horizontally; the MVP is one worker.
 - An in-flight turn is marked `in_progress` and a concurrent duplicate receives a
   retryable `409`. Startup recovery releases turns orphaned by a previous
-  process, replaying a committed booking response or making the turn retryable.
+  process, replaying a committed booking response or making the turn retryable
+  with the same message ID.
 - Automatic deployment depends on external VM, tailnet, Cloudflare, and GHCR
   configuration. It fails closed when those are unavailable and does not claim
   success without direct readiness and public-route evidence.

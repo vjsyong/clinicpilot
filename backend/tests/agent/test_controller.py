@@ -154,12 +154,22 @@ async def test_unrelated_yes_after_interruption_cannot_authorize() -> None:
     assert harness.booking_api.create_calls == []
 
 
-async def test_generated_success_claim_without_write_is_corrected() -> None:
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "Your appointment is booked and the bookings table has been refreshed.",
+        "Your appointment is confirmed.",
+        "Appointment confirmed for 2026-12-15 at 15:00.",
+        "I have scheduled your appointment.",
+        "Your appointment has been scheduled for next Tuesday.",
+        "You're all set for your visit.",
+        "I've got you booked in.",
+        "The booking was created successfully.",
+    ],
+)
+async def test_generated_success_claim_without_write_is_corrected(claim: str) -> None:
     draft = complete_draft(presented=None)
-    harness = build_harness(
-        [text_response("Your appointment is booked and the bookings table has been refreshed.")],
-        draft=draft,
-    )
+    harness = build_harness([text_response(claim)], draft=draft)
 
     result = await harness.controller.handle_turn(harness.ctx("hello"))
 
@@ -168,6 +178,18 @@ async def test_generated_success_claim_without_write_is_corrected() -> None:
     assert "No booking was created" in result.assistant_message
     assert "Booking summary:" in result.assistant_message
     assert harness.drafts.presentations
+
+
+async def test_generated_success_claim_without_a_draft_does_not_mention_a_saved_draft() -> None:
+    harness = build_harness([text_response("Your appointment has been confirmed.")])
+
+    result = await harness.controller.handle_turn(harness.ctx("hello"))
+
+    assert harness.booking_api.create_calls == []
+    assert result.events == []
+    assert "No booking was created" in result.assistant_message
+    assert "draft is still saved" not in result.assistant_message
+    assert harness.drafts.presentations == []
 
 
 async def test_confirmation_rejected_when_last_assistant_id_does_not_match() -> None:
@@ -546,3 +568,47 @@ async def test_success_claim_for_an_existing_booking_uses_canonical_details() ->
     assert result.events == []
     assert "B2001" in result.assistant_message
     assert "No booking was created" not in result.assistant_message
+
+
+async def test_regeneration_does_not_duplicate_the_existing_user_message() -> None:
+    harness = build_harness(
+        [text_response("Answer.")],
+        messages=[
+            {
+                "role": "user",
+                "content": "hello",
+                "_cp_message_id": "turn-regen",
+            }
+        ],
+    )
+
+    await harness.controller.handle_turn(harness.ctx("hello", "turn-regen"))
+
+    users = [message for message in harness.conversations.messages if message.get("role") == "user"]
+    assert len(users) == 1
+    assert users[0]["_cp_message_id"] == "turn-regen"
+    assert users[0]["content"] == "hello"
+
+
+async def test_confirmation_stream_emits_booking_tool_events() -> None:
+    booking = booking_view()
+    draft = complete_draft(presented="msg-summary")
+    harness = build_harness(
+        [text_response("Confirmed.")],
+        draft=draft,
+        messages=_presented_messages(draft),
+        booking_api=FakeBookingApi(create_result=booking),
+    )
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    async def emit(event: str, data: dict[str, Any]) -> None:
+        events.append((event, data))
+
+    result = await harness.controller.handle_turn(harness.ctx("yes"), emit=emit)
+
+    assert result.events[0].type == "booking_created"
+    starts = [data for name, data in events if name == "tool_start"]
+    ends = [data for name, data in events if name == "tool_end"]
+    assert starts[0]["name"] == "create_booking"
+    assert ends[0]["ok"] is True
+    assert booking.booking_id in ends[0]["summary"]

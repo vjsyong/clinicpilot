@@ -19,9 +19,9 @@ not run.
 | AC9 | pass | P002 rejected with 403 at the chat/booking boundary; model tools have no patient parameter. |
 | AC10 | pass | Backend restart test; container restart E2E; VM application container restart retained B1005. |
 | AC11 | pass | Playwright login → draft → summary → `yes` → `booking_created` → table refetch; public browser login → 3 rows → logout. |
-| AC12 | pass locally | Backend/frontend/security/container checks run locally with no production secrets; remote GitHub Actions not run (no repository/push authorization). |
-| AC13 | not verified | `.github/workflows/deploy.yml` is implemented and actionlint-clean, but no GitHub repository, GHCR publication, or Tailscale OAuth credentials were available/authorized. |
-| AC14 | not verified | `scripts/deploy.sh` implements image-only rollback and never deletes the volume, but a first-deployment host has no previous image; automatic rollback was not demonstrated. |
+| AC12 | pass | CI run 39753090072 on the public repository: backend, frontend, security, container/browser, aggregate `quality`, and publication all succeeded with no production secrets. |
+| AC13 | pass | CI published the tested image; deploy run 39753860541 promoted digest `sha256:e78f80cc...` (source `f07e942`) and public probes passed. A rerun skipped the already-deployed SHA. |
+| AC14 | not verified | `scripts/deploy.sh` implements image-only rollback and never deletes the volume, but a deliberately failing candidate was not deployed to demonstrate it. |
 | AC15 | pass | README commands rehearsed in a clean disposable copy (no `.git`, `.venv`, `node_modules`, or `data`); migration/seed/frontend build/start/login/wrong-prefix all behaved as documented. |
 
 ## Commands and counts
@@ -50,9 +50,13 @@ bash scripts/check.sh                                     -> all local gates pas
 - Live booking: D104/T005, 2026-12-15 15:00 → summary → `yes` → B1005.
 - Application container restart retained B1005.
 
-## Not run
+## Remote delivery
 
-Remote GitHub Actions, GHCR publication, Tailscale deployment, branch
-protection, and automatic rollback. See `docs/deployment-record.md` for the
-blocked inputs and the node deviation (cerritos has no KVM; the VM runs on
-enterprise with the same shape).
+- Public repository: https://github.com/vjsyong/clinicpilot
+- CI: run 39753090072 (all required jobs green)
+- Deploy: run 39753860541 (exact digest deployed; rerun skipped)
+- Branch protection: `quality` required on `main`
+- Not demonstrated: forced automatic rollback (AC14)
+- Deviation: Tailscale OAuth was unavailable, so deployment uses a scoped
+  self-hosted runner on the private enterprise network and key-only LAN SSH.
+  See `docs/deployment-record.md`.

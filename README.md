@@ -1,5 +1,7 @@
 # ClinicPilot
 
+Public repository: <https://github.com/vjsyong/clinicpilot>
+
 ClinicPilot is a single-patient clinic assistant for the supplied
 `dkl_ai_interview_data` dataset. It answers grounded questions about clinics,
 doctors, and treatments, collects appointment details over multiple chat turns,
@@ -212,18 +214,24 @@ Deployment credentials are environment secrets (`DEPLOY_SSH_KEY`,
 
 ### Deployment status for this build
 
-The application is deployed manually on a dedicated VM (`clinicpilot-demo`,
-VM 106) behind a Cloudflare tunnel, with the runtime prefix and password kept
-out of this repository. Public login, grounded Q&A, the draft → confirmation →
-booking flow, and restart persistence were verified against that deployment.
-See `docs/deployment-record.md` for non-secret operational details.
+The application is deployed on a dedicated VM (`clinicpilot-demo`, VM 106) on
+`enterprise` behind a Cloudflare tunnel, with the runtime prefix and password
+kept out of this repository. Public login, grounded Q&A, the draft →
+confirmation → booking flow, and restart persistence were verified against that
+deployment. See `docs/deployment-record.md` for non-secret operational details.
 
-The VM runs on `enterprise` with the planned 2 vCPU / 4 GB / 40 GB shape. CI
-runs on GitHub-hosted runners and publishes the tested image to GHCR; the deploy
-workflow promotes that exact digest through the enterprise-network runner. The
-workflow, publication, and public/routing checks are exercised by the repository.
-Automatic rollback remains bounded by the available previous image and is
-documented in `scripts/deploy.sh`.
+The full promotion path was exercised on the public repository:
+
+- CI run `39753090072` passed backend, frontend, security, container/browser,
+  `quality`, and publication.
+- Deploy run `39753860541` promoted the exact published digest
+  `sha256:e78f80cc...`; a rerun correctly skipped because that SHA was already
+  deployed.
+- Branch protection on `main` requires the aggregate `quality` status.
+
+The image is public on GHCR, so the VM pulls the digest without a registry
+credential. Automatic rollback is implemented in `scripts/deploy.sh` but was not
+forced against a deliberately failing candidate.
 
 ## Dataset assumptions
 

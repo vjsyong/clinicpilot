@@ -69,19 +69,38 @@ private handoff file. They are not in Git or this document.
   restart persistence), 8/8 live eval cases, strict Triage lint 100/100,
   pip-audit/npm audit clean, and Gitleaks found no leaks.
 
-## Not executed / blocked
+## Automatic delivery (verified)
 
-- **GitHub publication and remote CI:** no GitHub repository was created and no
-  commit/push was authorized in this session. `.github/workflows/ci.yml` was
-  linted and the equivalent container/browser jobs were run locally against the
-  packaged image, but no remote Actions run exists.
-- **Automatic deployment:** `.github/workflows/deploy.yml` and
-  `scripts/deploy.sh` are implemented and statically validated, but were not
-  executed. They require an authorized GitHub repository, GHCR publication,
-  Tailscale OAuth client credentials, a deployment-scoped tailnet tag, and an
-  SSH host key secret. None were available. The VM is not joined to the tailnet.
-- **Automatic rollback evidence:** no previous image existed on this fresh VM,
-  so `scripts/deploy.sh` would report that it cannot restore a first deployment.
-  The rollback path is implemented but has not been demonstrated on this host.
-- **Branch protection / required aggregate status:** not configured (no remote
-  repository).
+| Item | Value |
+| --- | --- |
+| Public repository | https://github.com/vjsyong/clinicpilot |
+| CI run | 39753090072 (backend, frontend, security, container, quality, publish: success) |
+| Deploy run | 39753860541 (success after fixing docker-group and state ownership) |
+| Deployed SHA | `f07e9422819de61ca053d2ca9f6f87a3a745e22b` |
+| Published/deployed digest | `sha256:e78f80cc14d8b83aeb1937a115b07e9bf9baa1190ad35cd5759c10919648c485` |
+| GHCR package | `ghcr.io/vjsyong/clinicpilot` (public) |
+| Idempotence | A rerun after the successful deploy skipped the deploy steps (`already deployed`). |
+| Runner | `clinicpilot-deploy-enterprise` on the existing `github-actions-runner` VM (100), labels `self-hosted, Linux, X64`; service `actions.runner.vjsyong-clinicpilot.clinicpilot-deploy-enterprise` |
+| Branch protection | `main` requires the aggregate `quality` status; force pushes/deletions disabled |
+
+The deploy workflow verifies the CI event, repository, branch, CI conclusion,
+published digest, and deployed revision before touching the host. `scripts/deploy.sh`
+runs migrations, updates only the application container, checks private readiness
+and public routing/auth, and restores the previous image on failure. The verified
+deploy left the SQLite volume intact and kept B1005.
+
+## Deviation from the plan and remaining gaps
+
+- **Planned Tailscale path not used.** `TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET`
+  and a deployment tailnet tag were unavailable. Instead, the deploy job runs on
+  a repository-scoped self-hosted runner on the private enterprise network and
+  reaches the VM with a key-only SSH credential over the LAN. The runner receives
+  the deploy key only in the protected `production` environment. The VM is not
+  joined to the tailnet.
+- **Automatic rollback not forced.** The rollback branch is implemented and the
+  first automatic deploy had a previous manual image available, but a deliberately
+  failing candidate was not deployed to demonstrate it.
+- **DHCP address.** The VM currently has `192.168.1.241`; the deploy variable uses
+  that address. A durable DHCP reservation or static address was not configured.
+- **Node deviation.** `cerritos` lacks KVM; the VM runs on `enterprise` with the
+  same 2 vCPU / 4 GB / 40 GB shape. See the VM section above.

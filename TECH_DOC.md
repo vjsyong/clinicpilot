@@ -228,7 +228,9 @@ through Tailscale-only SSH; it never rebuilds. Rollback restores the previous
 image but deliberately leaves the database volume untouched. The deploy job
 runs on a repository-scoped self-hosted runner on the private enterprise network
 (the planned Tailscale OAuth credentials were unavailable) and uses a key-only
-SSH credential over the LAN to the dedicated VM.
+SSH credential over the LAN to the dedicated VM. `main` requires the aggregate
+`quality` status. Automatic rollback is implemented but was not forced against a
+deliberately failing candidate.
 
 ## 10. Evaluation
 

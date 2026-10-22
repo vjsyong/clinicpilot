@@ -157,3 +157,22 @@ actions, reset, and Agent Explorer) from `main`.
   `/healthz` `404`, `/readyz` `404`.
 - Migration `0002_booking_ux` added the booking tombstones/edit marker and the
   durable `agent_events` trace table; the SQLite named volume was retained.
+
+## CPU Qwen3 retrieval and jina reranker deployment (2026-10-22)
+
+Deployed revision `bea2c4c7541ee34034ef110269faeae322e43bf6` from `main`.
+This replaces the MiniLM/PyTorch retrieval path with FastEmbed/ONNX
+`Qwen/Qwen3-Embedding-0.6B` embeddings and `jinaai/jina-reranker-v1-turbo-en`
+cross-encoder reranking. No GPU or external model service is used.
+
+- CI run 39817797041 passed backend, frontend, security, container, quality,
+  and publish. The container job exercised the model prewarm and readiness path.
+- Deploy run 39822655441 succeeded and promoted digest
+  `sha256:02b18d2523cd974a5131ac5a7d9e4b99810c6f824297d52ead6540fbe7c87d70`.
+- Public probes: login `200`, wrong prefix `404`, unauthenticated API `401`,
+  `/healthz` `404`, `/readyz` `404`.
+- The first CI run for this change (`39814409326`) failed the dependency audit
+  because FastEmbed 0.8.1 caps Pillow below 13. The follow-up commit `bea2c4c`
+  overrides that cap with Pillow 13.0.0; the text-only retrieval path re-passed
+  the audit, tests, retrieval evaluation, and container smoke test.
+- The SQLite named volume was retained; no schema migration was required.

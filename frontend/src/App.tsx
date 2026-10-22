@@ -16,6 +16,12 @@ import {
 } from "./lib/chat";
 import { readRuntimeConfig } from "./lib/config";
 
+type WorkbenchView = "chat" | "bookings";
+
+function initialView(): WorkbenchView {
+  return window.location.hash === "#bookings-panel" ? "bookings" : "chat";
+}
+
 function describeError(error: unknown): string {
   if (error instanceof ApiError) {
     return error.message;
@@ -28,6 +34,7 @@ function describeError(error: unknown): string {
 
 export function App() {
   const config = useMemo(() => readRuntimeConfig(), []);
+  const [view, setView] = useState<WorkbenchView>(initialView);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [inFlight, setInFlight] = useState(false);
@@ -57,7 +64,7 @@ export function App() {
       return;
     }
     transcript.scrollTop = transcript.scrollHeight;
-  }, [messages, inFlight, draft, bookingSuccess, chatError]);
+  }, [messages, inFlight, draft, bookingSuccess, chatError, view]);
 
   useEffect(() => {
     let cancelled = false;
@@ -225,6 +232,12 @@ export function App() {
     window.location.assign(API_PATHS.login);
   }, []);
 
+  const showView = useCallback((next: WorkbenchView) => {
+    setView(next);
+    const hash = next === "bookings" ? "#bookings-panel" : "#chat-panel";
+    window.history.replaceState(null, "", hash);
+  }, []);
+
   return (
     <div className="app" data-testid="workbench">
       <a className="skip" href="#main">
@@ -242,12 +255,28 @@ export function App() {
         </div>
         <nav className="nav" aria-label="Workbench">
           <div className="nav-label">Workbench</div>
-          <a className="nav-item active" href="#chat-panel" aria-current="page">
+          <button
+            type="button"
+            className={view === "chat" ? "nav-item active" : "nav-item"}
+            data-testid="nav-chat"
+            aria-current={view === "chat" ? "page" : undefined}
+            onClick={() => {
+              showView("chat");
+            }}
+          >
             Chat
-          </a>
-          <a className="nav-item" href="#bookings-panel">
+          </button>
+          <button
+            type="button"
+            className={view === "bookings" ? "nav-item active" : "nav-item"}
+            data-testid="nav-bookings"
+            aria-current={view === "bookings" ? "page" : undefined}
+            onClick={() => {
+              showView("bookings");
+            }}
+          >
             Bookings
-          </a>
+          </button>
         </nav>
         <div className="side-foot">
           <div className="sf-row">
@@ -269,30 +298,70 @@ export function App() {
             }}
           />
 
-          <div className="split-grid">
-            <ChatPanel
-              messages={messages}
-              input={input}
-              inFlight={inFlight}
-              error={chatError}
-              canRetry={failed !== null}
-              draft={draft}
-              success={bookingSuccess}
-              transcriptRef={transcriptRef}
-              onInputChange={setInput}
-              onSend={send}
-              onRetry={retry}
-              onNewConversation={newConversation}
-            />
+          <div className="tabs mobile-tabs">
+            <div className="tablist" role="tablist" aria-label="Workbench views">
+              <button
+                id="tab-chat"
+                type="button"
+                className="tab"
+                role="tab"
+                aria-selected={view === "chat"}
+                aria-controls="view-chat"
+                data-testid="tab-chat"
+                onClick={() => {
+                  showView("chat");
+                }}
+              >
+                Chat
+              </button>
+              <button
+                id="tab-bookings"
+                type="button"
+                className="tab"
+                role="tab"
+                aria-selected={view === "bookings"}
+                aria-controls="view-bookings"
+                data-testid="tab-bookings"
+                onClick={() => {
+                  showView("bookings");
+                }}
+              >
+                Bookings
+              </button>
+            </div>
+          </div>
 
-            <BookingsPanel
-              bookings={bookings}
-              loading={bookingsLoading}
-              error={bookingsError}
-              onRefresh={() => {
-                void refreshBookings();
-              }}
-            />
+          <div
+            className="view-slot"
+            id={`view-${view}`}
+            role="tabpanel"
+            aria-labelledby={`tab-${view}`}
+          >
+            {view === "chat" ? (
+              <ChatPanel
+                messages={messages}
+                input={input}
+                inFlight={inFlight}
+                error={chatError}
+                canRetry={failed !== null}
+                draft={draft}
+                success={bookingSuccess}
+                transcriptRef={transcriptRef}
+                onInputChange={setInput}
+                onSend={send}
+                onRetry={retry}
+                onNewConversation={newConversation}
+              />
+            ) : (
+              <BookingsPanel
+                bookings={bookings}
+                loading={bookingsLoading}
+                error={bookingsError}
+                onRefresh={() => {
+                  void refreshBookings();
+                }}
+              />
+            )}
           </div>
 
           <div className="foot">

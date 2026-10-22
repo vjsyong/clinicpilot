@@ -108,24 +108,25 @@ async function login(page: Page): Promise<void> {
   await expect(password).toHaveCount(0);
   await expect(messageBox(page)).toBeVisible();
   await initialBookings;
-  await waitForBookings(page);
 }
 
-async function waitForBookings(page: Page): Promise<void> {
-  await expect
-    .poll(async () => bookingRows(page).count(), { timeout: 15_000 })
-    .toBeGreaterThan(0);
-
-  // Let a loading/placeholder row settle before the test captures its baseline.
-  let previous = -1;
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const current = await bookingRows(page).count();
-    if (current === previous) {
-      return;
-    }
-    previous = current;
-    await page.waitForTimeout(250);
+async function showView(page: Page, view: "chat" | "bookings"): Promise<void> {
+  const desktopNav = page.getByTestId(`nav-${view}`);
+  const mobileTab = page.getByTestId(`tab-${view}`);
+  if (await desktopNav.isVisible()) {
+    await desktopNav.click();
+  } else {
+    await mobileTab.click();
   }
+  if (view === "bookings") {
+    await expect(page.getByTestId("bookings-table")).toBeVisible({ timeout: 15_000 });
+  } else {
+    await expect(messageBox(page)).toBeVisible({ timeout: 15_000 });
+  }
+}
+
+async function showBookings(page: Page): Promise<void> {
+  await showView(page, "bookings");
 }
 
 async function sendMessage(page: Page, text: string): Promise<{ status: number; body: ChatResponse }> {
@@ -227,7 +228,7 @@ test('prefix routing and unauthenticated API guards', async ({ request }) => {
 test('login, draft, confirmation and bookings table update', async ({ page }) => {
   await login(page);
 
-  const baseline = await bookingRows(page).count();
+  const baseline = (await listBookings(page)).length;
 
   const first = await sendMessage(page, 'I need a knee consultation');
   expect(first.status).toBe(200);
@@ -252,6 +253,8 @@ test('login, draft, confirmation and bookings table update', async ({ page }) =>
     if (!createdBookingId) {
       throw new Error('confirmation response did not include a booking_created event');
     }
+
+    await showBookings(page);
 
     // If a refetch is in flight, give an optimistic renderer ample time to show
     // its bug before we release the real database response.
@@ -312,6 +315,7 @@ test('booking persists across an application restart', async ({ page }) => {
   const expected = JSON.parse(readFileSync(STATE_FILE, 'utf8')) as Booking;
 
   await login(page);
+  await showBookings(page);
 
   const bookings = await listBookings(page);
   const persisted = bookings.find((booking) => booking.booking_id === expected.booking_id);

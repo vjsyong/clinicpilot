@@ -10,3 +10,27 @@
     display: none;
   }
 }
+
+.view-slot {
+  margin-top: var(--space-14);
+}
+
+.mobile-tabs {
+  display: none;
+}
+
+button.nav-item {
+  inline-size: 100%;
+  background: none;
+  border: 0;
+  border-inline-start: 2px solid transparent;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+@media (max-width: 1023px) {
+  .mobile-tabs {
+    display: block;
+  }
+}

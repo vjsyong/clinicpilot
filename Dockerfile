@@ -41,15 +41,35 @@ COPY backend/pyproject.toml backend/uv.lock backend/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --project backend --frozen --no-dev
 
-COPY backend/app backend/app
+# Prewarm only the model-facing modules. This stage is deliberately isolated
+# from the rest of the application so an API/controller change does not
+# invalidate the expensive download-and-warm layer.
+FROM runtime AS model-cache
 
-# Prewarm the pinned FastEmbed models so readiness never depends on a download.
-# The revision strings in app.settings identify the ONNX snapshots cached here.
+COPY backend/app/__init__.py backend/app/__init__.py
+COPY backend/app/model_config.py backend/app/model_config.py
+COPY backend/app/retrieval/__init__.py backend/app/retrieval/__init__.py
+COPY backend/app/retrieval/embeddings.py backend/app/retrieval/embeddings.py
+COPY backend/app/retrieval/reranker.py backend/app/retrieval/reranker.py
+COPY backend/app/retrieval/fastembed_cache.py backend/app/retrieval/fastembed_cache.py
+
+# The model identity lives in app.model_config and is shared with settings, so
+# this command stays cacheable without importing the rest of the backend.
 RUN /app/backend/.venv/bin/python -c "\
+from app.model_config import EMBEDDING_MODEL, EMBEDDING_REVISION, EMBEDDING_THREADS, RERANKER_MODEL, RERANKER_REVISION, RERANKER_THREADS; \
 from app.retrieval.embeddings import FastEmbedder; \
 from app.retrieval.reranker import FastEmbedReranker; \
-FastEmbedder('Qwen/Qwen3-Embedding-0.6B', 'af95f2c416ffe9379369ad64f9113e865db6112c', threads=8).embed_texts(['warmup']); \
-FastEmbedReranker('jinaai/jina-reranker-v1-turbo-en', 'b8c14f4e723d9e0aab4732a7b7b93741eeeb77c2', threads=8).prewarm()"
+FastEmbedder(EMBEDDING_MODEL, EMBEDDING_REVISION, threads=EMBEDDING_THREADS).embed_texts(['warmup']); \
+FastEmbedReranker(RERANKER_MODEL, RERANKER_REVISION, threads=RERANKER_THREADS).prewarm()"
+
+FROM runtime AS final
+
+# Cacheable model assets are copied as their own layer. The full application
+# source comes afterwards, so ordinary backend edits only rebuild app layers.
+COPY --from=model-cache /opt/hf /opt/hf
+COPY --from=model-cache /opt/fastembed /opt/fastembed
+
+COPY backend/app backend/app
 
 # The runtime is offline for model assets; everything needed was fetched above.
 ENV HF_HUB_OFFLINE=1 \

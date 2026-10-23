@@ -16,18 +16,20 @@ import threading
 import zipfile
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import numpy as np
 from numpy.typing import NDArray
 
-from app.contracts import RetrievedDocument
 from app.retrieval.fastembed_cache import (
     cache_directory,
     dereference_model_symlinks,
     is_external_data_error,
 )
-from app.settings import Settings, get_settings
+
+if TYPE_CHECKING:
+    from app.contracts import RetrievedDocument
+    from app.settings import Settings
 
 Vector = NDArray[np.float32]
 
@@ -125,6 +127,8 @@ _DEFAULT_LOCK = threading.Lock()
 
 
 def default_embedder(settings: Settings | None = None) -> FastEmbedder:
+    from app.settings import get_settings
+
     settings = settings or get_settings()
     key = (
         settings.embedding_model,

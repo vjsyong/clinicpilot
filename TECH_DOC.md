@@ -263,8 +263,12 @@ assets are served only to authenticated sessions.
 ## 9. Containers and CI
 
 The multi-stage image builds the frontend with Node 24 and the backend with
-Python 3.12, installs CPU-only PyTorch, prewarms the pinned embedding model, and
-runs as a non-root user. One Uvicorn worker. SQLite lives in a named data
+Python 3.12, installs the CPU inference runtime, prewarms the pinned embedding
+and reranker models in a dedicated cacheable stage, and runs as a non-root user.
+The model stage copies only the model manifest and retrieval modules, so normal
+backend edits do not invalidate the model-download/warm layer. CI exports the
+BuildKit layer cache to GitHub Actions (`type=gha`, `mode=max`), keeping that
+stage warm across runs; the full app source is copied afterwards. One Uvicorn worker. SQLite lives in a named data
 volume. The production Compose file publishes no application port; `cloudflared`
 is an opt-in profile. CI uses a separate Compose project, a deterministic
 OpenAI-compatible model stub, ephemeral volumes, no production credentials, and
@@ -273,7 +277,12 @@ always cleans up.
 CI jobs: backend (ruff, format, mypy, pytest), frontend (lint, typecheck, tests, build,
 strict vendored Triage lint), security (Gitleaks, pip-audit, npm audit),
 container (image build, Compose smoke, Playwright, restart persistence), and an
-aggregate `quality` gate. Every external action is pinned to a full commit SHA.
+aggregate `quality` gate. `scripts/ci/changed_domains.py` classifies the diff;
+backend, frontend, security, and container jobs are skipped when their inputs are
+untouched, test-only changes skip the image, and docs-only changes run only the
+lightweight change classifier plus `quality`. The aggregate treats intentionally
+skipped domains as success. Publication and deployment are skipped when no image
+was built. Every external action is pinned to a full commit SHA.
 Publication to GHCR happens only after a successful `main` run, loads the exact
 image artifact tested by the container job, tags it with the full commit SHA, and
 records the digest. Deployment promotes that digest through Tailscale-only SSH; it

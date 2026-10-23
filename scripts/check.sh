@@ -23,6 +23,13 @@ if [[ "$SKIP_INSTALL" != "1" ]]; then
     (cd frontend && npm ci)
 fi
 
+step "CI change classifier tests"
+python3 scripts/ci/changed_domains_test.py
+
+step "CI script lint"
+uv run --project backend ruff check scripts/ci
+uv run --project backend ruff format --check scripts/ci
+
 step "Backend lint"
 uv run --project backend ruff check backend
 

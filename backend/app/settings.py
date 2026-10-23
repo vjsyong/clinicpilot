@@ -8,6 +8,16 @@ from typing import Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.model_config import (
+    EMBEDDING_MODEL,
+    EMBEDDING_QUERY_PREFIX,
+    EMBEDDING_REVISION,
+    EMBEDDING_THREADS,
+    RERANKER_MODEL,
+    RERANKER_REVISION,
+    RERANKER_THREADS,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEV_PATH_PREFIX = "/demo/"
 DEV_PASSWORD = "clinicpilot-demo"  # noqa: S105 - documented non-production default
@@ -48,16 +58,13 @@ class Settings(BaseSettings):
     frontend_dist_dir: Path = REPO_ROOT / "frontend" / "dist"
     csv_dir: Path = REPO_ROOT / "dkl_ai_interview_data"
 
-    embedding_model: str = "Qwen/Qwen3-Embedding-0.6B"
-    embedding_revision: str = "af95f2c416ffe9379369ad64f9113e865db6112c"
-    embedding_query_prefix: str = (
-        "Instruct: Given a search query, retrieve relevant clinic, doctor, and "
-        "treatment records\nQuery: "
-    )
-    embedding_threads: int = Field(default=8, ge=1, le=64)
-    reranker_model: str = "jinaai/jina-reranker-v1-turbo-en"
-    reranker_revision: str = "b8c14f4e723d9e0aab4732a7b7b93741eeeb77c2"
-    reranker_threads: int = Field(default=8, ge=1, le=64)
+    embedding_model: str = EMBEDDING_MODEL
+    embedding_revision: str = EMBEDDING_REVISION
+    embedding_query_prefix: str = EMBEDDING_QUERY_PREFIX
+    embedding_threads: int = Field(default=EMBEDDING_THREADS, ge=1, le=64)
+    reranker_model: str = RERANKER_MODEL
+    reranker_revision: str = RERANKER_REVISION
+    reranker_threads: int = Field(default=RERANKER_THREADS, ge=1, le=64)
     reranker_enabled: bool = True
 
     cloudflare_tunnel_token: str = ""

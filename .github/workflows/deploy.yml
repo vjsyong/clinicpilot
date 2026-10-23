@@ -26,12 +26,45 @@ env:
   IMAGE: ghcr.io/${{ github.repository }}:${{ github.event.workflow_run.head_sha }}
 
 jobs:
+  gate:
+    name: check CI published an image
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      deploy: ${{ steps.check.outputs.deploy }}
+    if: >-
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Check whether the CI run published an image
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          conclusion="$(
+            gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
+              --paginate \
+              --jq '.jobs[] | select(.name == "publish") | .conclusion' |
+              head -n 1
+          )"
+          if [ "$conclusion" = "success" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            echo "CI publish succeeded; the tested digest is deployable." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "CI publish was ${conclusion:-missing}; nothing to deploy." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   deploy:
     name: deploy tested image
-    runs-on: [self-hosted, linux, x64]
-    timeout-minutes: 30
-    environment: production
+    needs: gate
     if: >-
+      needs.gate.outputs.deploy == 'true' &&
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.head_repository.full_name == github.repository &&

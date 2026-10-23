@@ -10,14 +10,16 @@ from __future__ import annotations
 import importlib
 import threading
 from collections.abc import Sequence
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from app.retrieval.fastembed_cache import (
     cache_directory,
     dereference_model_symlinks,
     is_external_data_error,
 )
-from app.settings import Settings, get_settings
+
+if TYPE_CHECKING:
+    from app.settings import Settings
 
 
 class Reranker(Protocol):
@@ -77,6 +79,8 @@ _DEFAULT_LOCK = threading.Lock()
 
 
 def default_reranker(settings: Settings | None = None) -> FastEmbedReranker:
+    from app.settings import get_settings
+
     settings = settings or get_settings()
     key = (
         settings.reranker_model,

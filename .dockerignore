@@ -44,3 +44,8 @@ backend/evals
 *.db-wal
 *.db-shm
 .DS_Store
+
+# Local indexes and frontend build caches
+.codegraph
+frontend/.vite
+frontend/coverage

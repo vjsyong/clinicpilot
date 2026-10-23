@@ -54,13 +54,14 @@ def _prepare_turn(db: DBHarness, clock: FrozenClock, *, commit_booking: bool) ->
     return conversation_id, token
 
 
-def _send_retry(db: DBHarness, token: str, conversation_id: str) -> Any:
+def _send_retry(db: DBHarness, clock: FrozenClock, token: str, conversation_id: str) -> Any:
     asgi = create_app(
         db.settings,
         controller_factory=lambda *_args, **_kwargs: FakeController(),
         index_factory=lambda *_args, **_kwargs: FakeIndex(),
     )
     with TestClient(asgi) as client:
+        asgi.app.state.clock = clock
         client.cookies.set("clinicpilot_session", token, path="/demo/")
         return client.post(
             "/demo/api/chat",
@@ -77,7 +78,7 @@ def _send_retry(db: DBHarness, token: str, conversation_id: str) -> Any:
 def test_restart_recovers_committed_booking_turn(db: DBHarness, frozen_clock: FrozenClock) -> None:
     conversation_id, token = _prepare_turn(db, frozen_clock, commit_booking=True)
 
-    response = _send_retry(db, token, conversation_id)
+    response = _send_retry(db, frozen_clock, token, conversation_id)
 
     assert response.status_code == 200
     payload = response.json()
@@ -95,7 +96,7 @@ def test_restart_releases_uncommitted_in_progress_turn(
 ) -> None:
     conversation_id, token = _prepare_turn(db, frozen_clock, commit_booking=False)
 
-    response = _send_retry(db, token, conversation_id)
+    response = _send_retry(db, frozen_clock, token, conversation_id)
 
     assert response.status_code == 200
     assert response.json()["assistant_message"] == "echo: yes"

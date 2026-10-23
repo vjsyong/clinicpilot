@@ -49,9 +49,20 @@ class ChangedDomainsTest(unittest.TestCase):
         self.assertTrue(domains["container"])
         self.assertTrue(domains["security"])
 
-    def test_workflow_change_is_security_only(self) -> None:
+    def test_ci_workflow_change_runs_the_container_job(self) -> None:
         self.assertEqual(
             classify([".github/workflows/ci.yml"]),
+            {
+                "backend": False,
+                "frontend": False,
+                "security": True,
+                "container": True,
+            },
+        )
+
+    def test_deploy_workflow_change_is_security_only(self) -> None:
+        self.assertEqual(
+            classify([".github/workflows/deploy.yml"]),
             {
                 "backend": False,
                 "frontend": False,

@@ -22,7 +22,7 @@ env:
 jobs:
   changes:
     name: changed domains
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       backend: ${{ steps.domains.outputs.backend }}
@@ -52,7 +52,7 @@ jobs:
     name: backend
     needs: changes
     if: needs.changes.outputs.backend == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: Check out
@@ -85,7 +85,7 @@ jobs:
     name: frontend
     needs: changes
     if: needs.changes.outputs.frontend == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: Check out
@@ -131,7 +131,7 @@ jobs:
     name: security
     needs: changes
     if: needs.changes.outputs.security == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: Check out full history
@@ -207,7 +207,7 @@ jobs:
     name: container
     needs: changes
     if: needs.changes.outputs.container == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       COMPOSE_PROJECT: ci-clinicpilot-${{ github.run_id }}-${{ github.run_attempt }}
@@ -270,7 +270,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          key: playwright-ubuntu-24.04-${{ hashFiles('package-lock.json') }}
 
       - name: Install Playwright test dependencies
         run: |
@@ -362,7 +362,7 @@ jobs:
     name: quality
     if: always()
     needs: [changes, backend, frontend, security, container]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Aggregate required jobs
@@ -406,7 +406,7 @@ jobs:
       needs.quality.result == 'success' &&
       needs.container.result == 'success'
     needs: [quality, container]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read

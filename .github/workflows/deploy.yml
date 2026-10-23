@@ -28,7 +28,7 @@ env:
 jobs:
   gate:
     name: check CI published an image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       deploy: ${{ steps.check.outputs.deploy }}

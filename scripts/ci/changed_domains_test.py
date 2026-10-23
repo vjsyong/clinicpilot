@@ -60,14 +60,14 @@ class ChangedDomainsTest(unittest.TestCase):
             },
         )
 
-    def test_deploy_workflow_change_is_security_only(self) -> None:
+    def test_deploy_workflow_change_runs_the_container_job(self) -> None:
         self.assertEqual(
             classify([".github/workflows/deploy.yml"]),
             {
                 "backend": False,
                 "frontend": False,
                 "security": True,
-                "container": False,
+                "container": True,
             },
         )
 

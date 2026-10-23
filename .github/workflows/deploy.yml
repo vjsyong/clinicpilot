@@ -63,6 +63,9 @@ jobs:
   deploy:
     name: deploy tested image
     needs: gate
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 30
+    environment: production
     if: >-
       needs.gate.outputs.deploy == 'true' &&
       github.event.workflow_run.event == 'push' &&

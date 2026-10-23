@@ -1,344 +1,387 @@
-# ClinicPilot — Technical Design
+# ClinicPilot: Technical Design
 
-## 1. Scope and constraints
+ClinicPilot combines a conversational interface with ordinary application
+services. DeepSeek interprets requests and proposes tool calls. Python code
+validates those calls, manages appointment state, and decides what can be saved.
 
-ClinicPilot is a single-patient (P001) clinic assistant built for a time-boxed
-MVP. It uses the six supplied CSVs as the only clinic knowledge source and one
-shared demo password. The design deliberately avoids a message broker, Redis, a
-vector database, a second AI service, streaming, and an agent framework.
+The goal is a small, inspectable clinic demo: answer questions from supplied
+records, collect appointment details over several messages, and save a booking
+only after confirmation. It supports one patient (`P001`), a shared demo login,
+and one backend worker. It is not a clinical decision system or a full scheduling
+platform.
 
-The hard invariants are:
+For setup commands, see the [README](README.md). For exact request and response
+fields, see [API and data contracts](docs/contracts.md).
 
-- The model proposes; the application validates. The model cannot choose the
-  patient, the tool URL, the internal credential, the idempotency key, or
-  whether a booking succeeded.
-- No booking write without a complete draft, a summary presented on the
-  immediately preceding assistant turn, and an unambiguous affirmative.
-- A correction bumps the draft version and requires a fresh confirmation.
-- Booking create is idempotent on `booking:<draft-id>:v<version>`.
-- No database transaction is held open during an LLM call.
-- All browser routes live beneath `DEMO_PATH_PREFIX`; wrong-prefix requests are
-  `404`, never a redirect to the application.
-- Production fails closed on missing or placeholder credentials.
+The [README assessment map](README.md#assignment-coverage) links each assignment
+requirement to source code. This document explains the architecture, intent
+routing, tool execution, booking state, and database design.
 
-## 2. Components
+## Architecture
 
 ```text
-backend/app/
-  main.py          prefix ASGI wrapper, lifespan wiring, readiness resources
-  settings.py      runtime configuration, prefix normalization, fail-closed checks
-  contracts.py     frozen Pydantic models and service protocols
-  api/             chat, bookings, health, page/asset serving, errors, deps
-  auth/            Argon2id password, opaque sessions, CSRF/security middleware
-  db/              SQLAlchemy models, session factory, repeatable CSV seeding
-  services/        conversations/turns, drafts, bookings, catalog/time logic
-  agent/           DeepSeek client, tool schemas, REST adapter, controller, prompt
-  retrieval/       CSV/DB documents, MiniLM embeddings, cosine index, P001 context
-frontend/src/      React workbench (chat + live bookings table)
-vendor/triage/     pinned MIT design system and strict lint tooling
+Browser
+  | HTTPS through Cloudflare Tunnel
+  v
+FastAPI application, one Uvicorn worker
+  |
+  +-- React + TypeScript workbench, built with Vite
+  +-- Authentication, conversation API, and streamed chat events
+  +-- Agent controller
+  |     +-- DeepSeek via the OpenAI Python SDK
+  |     +-- Local clinic search: Qwen3 + BM25 + exact matches + Jina reranking
+  |     +-- Patient record service
+  |     +-- HTTP calls to the application's booking API
+  +-- SQLAlchemy services -> SQLite
+        sessions, conversations, drafts, bookings, audit events
 ```
 
-### Request flow
+The frontend and backend ship in one Docker image. SQLite lives in a persistent
+volume. The embedding model runs in the application on CPU; DeepSeek is the
+external generation service. There is no separate AI server or vector database.
 
-1. `PrefixApp` accepts only paths beginning with the configured prefix, strips
-   the prefix, and forwards to the FastAPI app. `/prefix` is canonicalized to
-   `/prefix/` with a `308`. Internal `/healthz` and `/readyz` additionally
-   require a loopback `Host`; a public hostname receives JSON `404`.
-2. Browser requests use the `clinicpilot_session` cookie. Session tokens are
-   random 32-byte values; only their SHA-256 hashes are stored. Cookies are
-   `HttpOnly`, `SameSite=Lax`, and `Secure` in production, scoped to the prefix
-   path.
-3. The `chat` route verifies session ownership, enforces P001, deduplicates the
-   client message ID, and serializes turns per conversation.
-4. The controller loads stored provider messages and the current draft, decides
-   whether the turn is a valid confirmation, and runs a bounded tool loop.
-5. After the turn, the route stores the complete `ChatResponse` against the
-   `chat_turns` row. A lost HTTP response can be retried with the same message
-   ID and returns the stored response without repeating side effects.
+### Why These Choices
 
-### Authentication and browser protections
+| Choice | Reason | Trade-off |
+| --- | --- | --- |
+| FastAPI + Pydantic | Typed HTTP requests and validation at the API boundary | Business rules still need explicit service code |
+| SQLite + SQLAlchemy 2 + Alembic | Persistent state and migrations without another service | One worker; no horizontal scaling with the current locks |
+| Direct tool loop using the OpenAI SDK | Keeps the model, tool definitions, and execution rules easy to inspect | Retry, history, and recovery logic are maintained in this app |
+| FastEmbed/ONNX with Qwen3 and Jina | Local CPU embedding and reranking without another paid API | Models add download size, memory use, and startup work |
+| Hybrid search in memory | Handles names and IDs as well as loosely worded questions | Appropriate for the small catalog, not a demonstrated large-scale search system |
+| Booking calls through HTTP | Makes the booking API enforce authorization and duplicate prevention | Adds a local HTTP hop inside the same application |
+| Server-checked confirmation | Ties permission to an exact saved draft, without another model classification call | Only a defined set of affirmative replies is accepted |
+| One image, runtime configuration | Promotes the tested artifact without rebuilding for each environment | Deployment must supply credentials, routes, and persistent storage |
 
-- `POST /login` takes a shared password, verifies an Argon2id hash, applies a
-  per-client 5-failures/5-minutes throttle, and sets an 8-hour session.
-- `POST /logout` revokes the session server-side and clears the cookie.
-- Unauthenticated page requests redirect to `./login`; unauthenticated API
-  requests return JSON `401`.
-- Unsafe methods carrying a session cookie are checked against `Origin` (and
-  `X-Forwarded-Proto` behind the tunnel). A cookie-authenticated write without a
-  matching origin is rejected with `403`.
-- Responses carry `Cache-Control: no-store`, `Referrer-Policy: no-referrer`,
-  `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and a self-only
-  CSP.
+### Runtime Route Boundary
 
-## 3. Data model
+The browser-facing routes are mounted below `DEMO_PATH_PREFIX` (`/demo/` in
+development). The implementation also exposes a non-streamed `POST /api/chat`
+for the assignment contract; the React workbench uses `POST /api/chat/stream`
+to show tool progress and draft updates. Both paths execute the same controller,
+conversation ownership checks, patient enforcement, and replay rules.
 
-Seed tables: `clinics`, `doctors`, `treatments`, `patients`,
-`patient_treatment_history`, `patient_bookings`. Prices/fees are stored as
-integer cents. Source IDs are preserved.
+`GET /api/bookings` is available to an authenticated browser session for the
+workbench. `POST /api/bookings` is restricted to the internal tool key and accepts
+only `{draft_id, draft_version}` plus the idempotency header. This prevents the
+model or browser from choosing a patient, bypassing draft validation, or claiming
+success without a saved database record.
 
-Additional tables:
+The chat body requires `message` and a client-generated `message_id`.
+`conversation_id` is omitted or null for a new chat and reused for later turns.
+`patient_id` defaults to `P001`; other patient IDs are rejected. Booking creation
+returns `201` for a new record and `200` for an idempotent replay.
 
-- `demo_sessions` — opaque token hash, timestamps, revocation.
-- `conversations` — owning demo session, patient, `messages_json`, timestamps.
-- `chat_turns` — unique `(conversation_id, client_message_id)`, canonical request
-  hash, status, stored response.
-- `booking_drafts` — version, status, optional slot fields, canonical
-  `starts_at_utc`, timezone, presentation marker, authorization turn, booking id.
+## Intent Recognition and Routing
 
-`patient_bookings` is extended with `starts_at_utc`, `timezone`,
-`idempotency_key UNIQUE`, `request_hash`, and `created_at`. `request_hash` covers
-the canonical booking payload (patient, doctor, treatment, resolved slot,
-timezone, notes), not just the draft ID/version. Seeded bookings get the clinic
-timezone and a normalized UTC timestamp. New IDs are allocated from the next
-numeric `B` value inside the insert transaction.
+Intent recognition uses DeepSeek's function selection within a custom agent
+loop. There is no separate classifier or agent-framework dependency. The system
+prompt supplies the current date, P001's context, the saved draft, and tool rules.
+The model can combine several tools in a turn or ask a follow-up question.
 
-Seeding upserts source rows by source ID and never deletes user-created
-bookings, so it is safe to run on every container start.
+| User intent | Tool or application path | Result |
+| --- | --- | --- |
+| Clinic Q&A or treatment/doctor recommendation | `search_knowledge` | Retrieved catalog evidence for a sourced answer |
+| Personal medical/allergy history | Injected context or `get_patient_record` | P001's profile and treatment history |
+| Existing appointment query | `get_patient_bookings` → `GET /api/bookings` | Current persisted bookings, evaluated against the current date |
+| New booking or changed details | `update_booking_draft` | Validated draft, missing fields, or confirmation summary |
+| Approval of a complete summary | Server confirmation check → booking REST adapter | Persisted booking and structured success event |
 
-## 4. Booking state machine
+The controller validates every proposed tool name and argument. Confirmation is
+an application-owned transition: after authorization, the controller calls the
+booking API even if the confirmation model call fails or does not request the
+write. This keeps execution tied to the user's approval and saved draft.
+
+## A Chat Request, End to End
+
+1. **Route and authenticate.** The application checks the configured URL prefix
+   and session cookie. API calls require a valid session; a conversation must
+   belong to that session. The patient is fixed to P001.
+2. **Identify the turn.** The client supplies a message ID. Reusing it with the
+   same request returns the saved result; changing its content is a conflict.
+   Turns within a conversation run in order.
+3. **Load context.** The controller reads saved messages, patient context, and
+   the current booking draft. It checks whether this message confirms a summary
+   presented on the preceding assistant turn.
+4. **Call the model and tools.** DeepSeek returns text or requests a tool. The
+   controller checks the tool name and arguments, executes permitted actions,
+   and sends the result back to the model when another round is needed.
+5. **Save and display the result.** The application stores the final response,
+   source references, draft, and booking events. The UI uses those structured
+   results to update its transcript and booking list.
+
+The default limits are six tool rounds, 40 history messages, a 4,000-character
+user message, and a 45-second provider timeout. Model output is capped at 1,024
+tokens per call. History trimming preserves tool calls with their results. The
+configured model is `deepseek-flash`, with thinking disabled and temperature 0;
+these settings do not make live-model behavior deterministic.
+
+### Streaming and Reconnection
+
+The workbench sends chat requests to `POST /api/chat/stream`. Server-Sent Events
+(SSE) carry text, tool progress, sources, draft updates, and the final response.
+`POST /api/chat` provides a non-streamed response under the same ownership and
+retry rules.
+
+A browser disconnect detaches from the run; it does not cancel the work. The
+browser can reconnect to `GET /api/chat/runs/{turn_id}` and replay events. Stop
+requests use a separate endpoint and ask the run to cancel cooperatively. Runs
+execute in the application process, not a durable task queue; process-restart
+recovery uses saved turn and booking state instead.
+
+## Search and Patient Context
+
+### Clinic Knowledge
+
+The supplied catalog contains two clinics, four doctors, and five treatments.
+Each row becomes one search document: **11 documents in total**. Documents retain
+the source filename and record ID; doctor documents also include clinic context.
+The index reads from SQLite at runtime and can read the CSVs directly in tests.
+
+Search combines three methods:
+
+- **Exact matching** for IDs, names, and supported name variants.
+- **BM25 keyword ranking** over text and metadata, with weights for fields.
+- **Semantic similarity** using normalized `Qwen/Qwen3-Embedding-0.6B` vectors
+  through FastEmbed/ONNX and NumPy cosine comparisons.
+
+The results are combined using reciprocal rank fusion: a document earns a score
+from its position in each result list. This avoids treating a keyword score and
+an embedding score as if they used the same scale. Results include the source,
+an excerpt, and which search methods found the record.
+
+The configured `jinaai/jina-reranker-v1-turbo-en` reranks the fused candidates,
+with exact matches kept first. If reranking fails, search falls back to the fused
+ranking. Both models run on CPU; `RERANKER_ENABLED` can disable reranking.
+
+Model revisions are pinned in [model_config.py](backend/app/model_config.py) and
+[.env.example](.env.example). Document vectors are cached by model, revision,
+and document inputs. The index loads before readiness is reported. Docker
+downloads both models during the build and uses cached assets at runtime.
+
+Source references such as `[doc:C001]` connect an answer to a record that the UI
+can display. They make answers inspectable; a citation alone does not guarantee
+that every generated statement is correct.
+
+### Patient Records
+
+Patient data is not part of the clinic search index. A separate database read
+supplies P001's profile and treatment history to the prompt. The
+`get_patient_record` tool can read that context again, including recorded
+measurements and visit notes. Current bookings come from the booking REST API,
+not from model memory or old treatment history.
+
+This separation keeps general catalog search distinct from patient-specific
+data. Patient context and retrieved text are sent to DeepSeek to generate
+answers; local embeddings do not make the whole application local or offline.
+
+## Tools and Application Rules
+
+The tool surface contains eight tools, defined in
+[`schemas.py`](backend/app/agent/schemas.py):
+
+| Tool | Purpose |
+| --- | --- |
+| `search_knowledge` | Search clinic, doctor, and treatment records |
+| `get_patient_record` | Read P001's profile and treatment history |
+| `get_patient_bookings` | Read current bookings through the REST API |
+| `update_booking_draft` | Collect or change details; optionally start an edit of an existing booking |
+| `abandon_booking_draft` | Discard the current draft |
+| `create_booking` | Submit the server-authorized draft; takes no model arguments |
+| `delete_patient_booking` | Propose removal of a booking, subject to confirmation |
+| `request_demo_reset` | Propose restoring the shared demo, subject to confirmation |
+
+The application validates arguments locally rather than relying on the provider
+to enforce the JSON schemas. The model cannot choose the patient, internal URL,
+credential, request key, or booking outcome. A request to write is refused unless
+the required application state allows it.
+
+## Booking Lifecycle
 
 ```text
-no draft
-  → collecting_details        (missing doctor/treatment/date/time)
-  → awaiting_confirmation     (complete, canonical summary presented)
-  → booking_in_progress       (authorized for this turn)
-  → booked
+collecting_details -> awaiting_confirmation -> booking_in_progress -> booked
+        ^                     |
+        +--- changed details -+
 
-collecting_details / awaiting_confirmation → cancelled
-changed details → validate → collecting_details or awaiting_confirmation
-external failure → draft retained; authorized turn cleared; retry safely
+An unfinished draft can also be cancelled.
 ```
 
-Every meaningful slot change validates the value, re-resolves the clinic
-timezone if the doctor changes, increments the version, clears the confirmation
-marker, and returns the missing fields or a canonical summary. Summaries are
-rendered from the persisted draft, never from regenerated model text.
+### Collect and Validate
 
-### Confirmation rule
+A draft stores the doctor, treatment, local date and time, clinic timezone,
+resolved UTC timestamp, optional notes, and a version number. The service checks
+IDs, doctor-treatment compatibility, and the requested time. Incomplete drafts
+return missing fields and, where applicable, deterministic slot suggestions.
+Suggestions are convenience options, not verified availability.
 
-A confirmation is accepted only when all of the following hold:
+Changing details increments the draft version and clears the previous
+confirmation. Changing the doctor also re-resolves the clinic and timezone.
+Patient-reported symptoms can be retained in draft notes as
+`Patient reports: <exact words>` without adding a diagnosis or inferred severity.
 
-1. the draft is complete and `awaiting_confirmation`;
-2. the last assistant message presented that exact `(draft_id, version)`;
-3. the normalized user text is exactly one of `yes`, `yes please`, `confirm`,
-   `confirmed`, `go ahead`, `book it`, `yes book it`, `yes confirm`,
-   `please book it`.
+### Present and Confirm
 
-Case, surrounding whitespace, repeated spaces, and trailing `.`/`!`/`?` are
-normalized. Anything with a correction or extra instruction is not a
-confirmation. An interruption clears the presentation marker; a fresh summary is
-required before another confirmation can succeed. The controller also replaces
-generated prose that claims a booking succeeded when no write was persisted, and
-re-presents the canonical summary in that case.
+The confirmation summary is built from the saved draft. The application records
+which draft version the assistant presented. A write is authorized only if the
+draft is complete, that exact version was presented on the preceding assistant
+turn, and the new message is a recognized affirmative.
 
-### Idempotency and recovery
+Accepted replies include `yes`, `yes please`, `confirm`, `confirmed`, `go ahead`,
+`book it`, `yes book it`, `yes confirm`, and `please book it`. Matching ignores
+case, repeated spaces, and trailing sentence punctuation. A reply with a
+correction or an extra instruction is not confirmation. An interruption requires
+the summary to be presented again before a later affirmative can authorize it.
 
-`POST /api/bookings` requires `X-Internal-Tool-Key` and
-`Idempotency-Key: booking:<draft-id>:v<version>`. The server loads canonical
-details from the draft. A replay with the same key and canonical details returns
-the existing booking with `200`; the same key with different canonical details
-returns `409`. Insert and draft-booked updates happen in one transaction.
+### Save Once and Recover
 
-The agent retries a lost create response once with the same key. If the response
-is still unavailable but the draft is marked booked, the controller reconstructs
-the success result from persisted draft/booking data instead of claiming failure.
-At startup, `app.services.recovery` releases orphaned in-progress turns and, for
-a committed booking, stores the original replay response before traffic resumes.
-A failed turn can therefore be retried with the same message ID without a
-duplicate write.
+The create request contains only the draft ID and version. The internal API
+loads the saved details itself and requires both a server credential and
+`Idempotency-Key: booking:<draft-id>:v<version>`.
 
-## 5. Agent and tools
+- The same key and details return the existing booking instead of inserting one.
+- The same key with different details returns `409 Conflict`.
+- The booking write and draft update happen in one database transaction.
+- No database transaction stays open while waiting for the model.
 
-Eight tools are exposed with strict JSON schemas:
+The agent retries a lost create response once with the same key. If the booking
+was committed but the response is still unavailable, the controller can recover
+the result from the saved draft and booking. It also replaces unsupported
+generated success wording: the final success message must come from a persisted
+booking, even if the model fails after the write.
 
-```text
-search_knowledge(query, filters?)
-get_patient_record()
-get_patient_bookings()
-update_booking_draft(booking_id?, doctor_id?, treatment_id?, local_date?, local_time?, notes?)
-delete_patient_booking(booking_id)
-abandon_booking_draft()
-request_demo_reset()
-create_booking()
-```
+On application startup, recovery checks turns left in progress by the previous
+process. A committed booking can complete its saved response; otherwise the turn
+becomes retryable and booking authorization is cleared. This handles a narrow
+set of interrupted-turn cases, not general distributed job recovery.
 
-`get_patient_bookings` and `create_booking` are real HTTP calls to the
-application's internal booking API with a server-owned key, base URL (including
-the runtime prefix), patient, and idempotency key. `get_patient_record` performs
-the same read-only P001 lookup used for the system prompt, so recorded
-measurements and visit notes are answerable without putting them in the shared
-index. `create_booking` takes no model arguments. Outside an authorized
-confirmation turn it is refused.
+### Edit, Remove, and Reset
 
-The controller bounds the loop (`MAX_TOOL_ROUNDS`, default 6), the context
-(`MAX_HISTORY_MESSAGES`, default 40), the provider timeout, and the retry count.
-Tool names and arguments are validated before execution. Trimming preserves
-assistant tool-call / tool-result pairing. The DeepSeek client uses
-`deepseek-flash` by default, non-thinking mode, temperature 0, and strips
-internal `_cp_*` message keys before sending.
+An edit starts a draft from an existing booking and updates that row only after
+fresh confirmation. Removal marks a booking as deleted so it disappears from the
+active list while its record remains. Chat removal requests require a separate
+affirmative turn; the workbench also provides an explicit delete control.
 
-Booking UX is state-aware. An incomplete draft returns `next_step=choose_slot`
-with deterministic clinic-local suggestions; confirmation language is withheld
-until a complete summary is presented. The draft card exposes Confirm booking,
-and the server accepts the same explicit confirmation. `booking_id` starts an
-edit draft that updates the existing row on confirmation. Deletion is a
-tombstone: `delete_patient_booking` only proposes it, and a separate affirmative
-turn executes it. Patient-reported symptoms are stored in empty draft notes as
-`Patient reports: <exact words>` without diagnosis or inferred severity.
+Reset is intentionally shared: it restores P001's seed bookings, removes new
+P001 bookings, and clears conversations and drafts across sessions. It keeps the
+audit events. It is a demo convenience, not a patient-data retention policy.
 
-Model calls, tool calls, and actions are written to `agent_events` with model
-IDs, usage (including cached/reasoning tokens), latency, request context, and
-results. The Explorer API is scoped to the authenticated demo session. Costs are
-estimates from optional `MODEL_*_PRICE_PER_MILLION_USD` settings; with rates at
-zero the UI shows tokens but no dollar estimate.
+## Data and Time
 
-If the model or provider fails after a confirmed write, the final answer is
-built from the persisted booking record. Generated success wording is replaced by
-canonical text; when no booking exists it becomes the deterministic
-`No booking was created` response. The phrase "booked" is never accepted from
-generated text alone. One worker serializes turns per conversation. At startup,
-`services/recovery.py` releases turns orphaned by a previous process: a turn
-with a committed booking is completed from the persisted record, otherwise it
-is failed and its authorized draft returns to confirmation so the same message
-ID can be retried.
+SQLAlchemy models and Alembic migrations define these groups of tables:
 
-## 6. Retrieval
+| Group | Stored data |
+| --- | --- |
+| `clinics`, `doctors`, `treatments` | Catalog records; each doctor references a clinic |
+| `patients`, `patient_treatment_history` | Profiles and history; visits reference a patient and doctor |
+| `patient_bookings` | Patient, doctor, treatment foreign keys; local/UTC slot, status, notes, unique idempotency key, and deletion markers |
+| `demo_sessions` | Hashed session tokens, expiry, and revocation |
+| `conversations`, `chat_turns` | Session ownership, model messages, request hashes, status, and saved responses |
+| `booking_drafts` | Conversation-linked versioned details, confirmation markers, authorization, and booking reference |
+| `agent_events` | Model calls, tool calls, actions, usage, latency, and payloads |
 
-One document is built per knowledge row (2 clinics + 4 doctors + 5 treatments =
-11). Each has `document_id`, `source_file`, `record_id`, text, and metadata.
-Doctor documents include clinic context; treatment documents include category.
-No clinical claims are invented to improve similarity.
+Prices use integer cents and source IDs are preserved. CSV seeding updates rows
+by source ID without overwriting user-created bookings. Bookings include a unique
+request key and a hash of their canonical details. Turns have a unique
+`(conversation_id, client_message_id)` pair to support safe request replay.
+Audit events remain when conversations are deleted or the demo is reset.
 
-Documents come from the database in production and directly from the CSVs in
-tests. Embeddings use `sentence-transformers/all-MiniLM-L6-v2` at the pinned
-revision, normalized, in memory. Document vectors are cached by a SHA-256
-fingerprint over model, revision, and document inputs. `prewarm()` builds the
-index before readiness is reported.
+Appointments use the selected clinic's local time: C001 is `America/New_York`;
+C002 is `America/Los_Angeles`. Python `zoneinfo` resolves local times to UTC.
+Past times and ambiguous or nonexistent daylight-saving times are rejected for
+clarification. Summaries and the UI display the resolved local time and zone.
 
-Retrieval is hybrid: exact ID/name/alias matches, a field-weighted BM25 channel
-over document text and metadata, and dense cosine similarity are fused with
-reciprocal rank fusion. `search_evidence()` returns the document, score,
-channels, and an excerpt; the controller passes a `[doc:<record_id>]` citation
-to the model. The deterministic retrieval evaluation lives at
-`backend/evals/retrieval.py` (`python backend/evals/retrieval.py`). Patient
-records are never added to the shared knowledge index. P001's profile
-(including date of birth and contact details) and treatment history are injected
-into the prompt through a separate DB read and can be re-read with
-`get_patient_record`; bookings are read through the REST tool.
+The CSVs do not specify which treatments each doctor offers. The explicit mapping
+in [`doctor_treatments.json`](backend/app/config/doctor_treatments.json) fills that
+gap. Valid future times are otherwise assumed available: there is no calendar
+integration, conflict detection, or enforcement of opening hours as availability.
 
-## 7. Time handling
+## Frontend and Access
 
-Clinics map to `America/New_York` (C001) and `America/Los_Angeles` (C002).
-`local_date`/`local_time` are combined with the clinic's zone using `zoneinfo`.
-Past times and nonexistent/ambiguous DST local times are rejected with a
-clarification rather than guessed. Changing the doctor re-resolves the clinic
-and timezone. The UI and confirmation summary display the resolved date, time,
-and timezone. Otherwise valid slots are assumed available; operating hours are
-not enforced as availability.
+React and TypeScript provide the workbench; Vite builds it with relative asset
+URLs. FastAPI injects the runtime path configuration when serving the page.
+The production prefix is not compiled into JavaScript or baked into the image.
+The UI uses a pinned copy of the Triage design system.
 
-## 8. Frontend
+The Assistant view restores saved conversations, displays tool and source
+details, and attaches draft and confirmation controls to the relevant turn.
+Booking events trigger a fresh read of the booking list. Markdown supports
+tables but never renders raw model HTML. The Explorer reads session-scoped
+execution traces, including model IDs, latency, tokens, and cost estimates.
+Cost rates are configurable and may become outdated; setting them to zero hides
+the dollar estimate. They are not provider billing data.
 
-The React workbench is built to relative asset URLs (`base: './'`) and fetches
-`./api/...`; the backend injects the runtime prefix into a JSON
-`#clinicpilot-config` element when it serves the authenticated index. No
-production prefix or secret is a build argument or build-time variable.
+Access is deliberately simple but enforced on the server:
 
-The Assistant tab uses the vendored Triage chat system. It streams turns over
-SSE (`POST /api/chat/stream`), persists conversations per authenticated demo
-session, restores the active conversation on reload, and re-attaches to an
-in-flight run. The transcript renders safe markdown including GFM tables (never
-raw HTML), shows one collapsed tool/source disclosure, turns
-`[doc:<record_id>]` citations into a source inspector, and attaches the canonical
-draft to the presenting turn. Incomplete drafts show selectable clinic-local
-slot suggestions; complete drafts show Confirm booking. Booking rows expose
-Edit, armed Delete, and the shared Reset demo action. The Explorer tab shows
-session-scoped model calls, tools, actions, messages, tokens, and optional cost
-estimates. Copy, retry, regenerate, and stop are available; the composer is
-docked on phones and the history rail becomes a sheet. Bookings refetch after
-booking created/updated/deleted. A failed send retries with the same message ID.
-Concurrent duplicate sends are prevented and `401` returns to login. The login
-page is server-rendered and uses only public design-system assets; application
-assets are served only to authenticated sessions.
+- All browser routes sit under `DEMO_PATH_PREFIX`. Other paths return `404`;
+  the prefix without its trailing slash redirects to the canonical path.
+- Login checks an Argon2id password hash. Five failed attempts within five
+  minutes trigger a per-client throttle. Sessions last eight hours by default.
+- Session tokens are random 32-byte values; only their SHA-256 hashes are stored.
+  Cookies are `HttpOnly`, `SameSite=Lax`, prefix-scoped, and `Secure` in production.
+- Cookie-authenticated writes require a matching origin. Responses include a
+  self-only Content Security Policy, no-store caching, and framing protections.
+- Booking creation requires the internal key; a browser session alone cannot
+  call the create endpoint. Production rejects unsafe placeholder settings and
+  the controlled test-model endpoint.
+- `/healthz` and `/readyz` accept internal probes with a loopback host and reject
+  public-host or Cloudflare-forwarded requests. Readiness checks the database and
+  loaded search resources, not the availability of DeepSeek.
 
-## 9. Containers and CI
+These controls protect a shared demo. A secret prefix and shared password do not
+replace individual accounts, roles, or clinical-system security requirements.
 
-The multi-stage image builds the frontend with Node 24 and the backend with
-Python 3.12, installs the CPU inference runtime, prewarms the pinned embedding
-and reranker models in a dedicated cacheable stage, and runs as a non-root user.
-The model stage copies only the model manifest and retrieval modules, so normal
-backend edits do not invalidate the model-download/warm layer. CI exports the
-BuildKit layer cache to GitHub Actions (`type=gha`, `mode=max`), keeping that
-stage warm across runs; the full app source is copied afterwards. One Uvicorn worker. SQLite lives in a named data
-volume. The production Compose file publishes no application port; `cloudflared`
-is an opt-in profile. CI uses a separate Compose project, a deterministic
-OpenAI-compatible model stub, ephemeral volumes, no production credentials, and
-always cleans up.
+## Testing and Delivery
 
-CI jobs: backend (ruff, format, mypy, pytest), frontend (lint, typecheck, tests, build,
-strict vendored Triage lint), security (Gitleaks, pip-audit, npm audit),
-container (image build, Compose smoke, Playwright, restart persistence), and an
-aggregate `quality` gate. `scripts/ci/changed_domains.py` classifies the diff;
-backend, frontend, security, and container jobs are skipped when their inputs are
-untouched, test-only changes skip the image, and docs-only changes run only the
-lightweight change classifier plus `quality`. The aggregate treats intentionally
-skipped domains as success. Publication and deployment are skipped when no image
-was built. Every external action is pinned to a full commit SHA.
-Publication to GHCR happens only after a successful `main` run, loads the exact
-image artifact tested by the container job, tags it with the full commit SHA, and
-records the digest. Deployment promotes that digest through Tailscale-only SSH; it
-never rebuilds. Rollback restores the previous image but deliberately leaves the
-database volume untouched. The deploy job runs on a repository-scoped self-hosted
-runner that is a tailnet member and uses a key-only SSH credential over Tailscale
-MagicDNS to the dedicated VM. The ephemeral GitHub-hosted + Tailscale OAuth join
-was unavailable; this is the documented runner deviation. `main` requires the
-aggregate `quality` status. Automatic rollback was exercised with a forced
-readiness failure: the previous digest was restored and the database volume
-remained. Public deployment probes require health paths to return `404`.
+Tests cover separate questions rather than treating every passing test as
+evidence of model quality:
 
-## 10. Evaluation
+| Check | What it tests |
+| --- | --- |
+| Backend tests with temporary SQLite and an injected clock | API rules, ownership, drafts, confirmation, retries, recovery, and database effects |
+| Frontend tests and build checks | UI logic, TypeScript, lint, and build correctness |
+| Playwright against the packaged image and model stub | Browser flows, routing, login, and persistence across restart |
+| Local retrieval evaluation | Search results with the real local embedder |
+| Separate live DeepSeek evaluation | Recorded end-to-end behavior with the real provider and booking REST API |
 
-- Deterministic tests assert facts, source records, valid tool actions, state
-  transitions, idempotency, and database effects. They do not assert generated
-  prose.
-- `backend/evals/run.py` runs representative cases against the real DeepSeek
-  model with a temporary SQLite database and the real booking REST API. It is
-  not part of PR CI and never prints secrets.
-- Live-model results are reported separately from mocked tests. The recorded run
-  is the only evidence of live-model quality.
+Standard tests require no live DeepSeek key or GPU. Live evaluation is opt-in,
+makes provider calls, and is not part of pull-request CI. Its results describe
+the recorded cases and run, not broad clinical accuracy.
 
-## 11. Decisions and limitations
+GitHub Actions combines backend, frontend, security, and container/browser checks
+in a `quality` gate. Security checks use Gitleaks, `pip-audit`, and `npm audit`.
+The multi-stage image uses Node 24 and Python 3.12; runtime uses a non-root user,
+CPU ONNX inference, and one Uvicorn worker.
 
-Decisions:
+`scripts/ci/changed_domains.py` selects checks by changed inputs. Docs-only
+changes run the lightweight classifier and `quality`; unaffected domains are
+intentionally skipped. Publication and deployment run only when an image was
+built. The model manifest and retrieval modules form a separate cacheable image
+stage, with BuildKit layers cached in GitHub Actions (`type=gha`, `mode=max`).
+Normal backend edits therefore do not invalidate the model prewarm layer.
 
-- SQLite + one worker + per-conversation in-process locks for a small shared
-  demo; this avoids distributed coordination while preserving serialized turns.
-- Server-side confirmation vocabulary rather than trusting another model
-  classification call.
-- HTTP booking tools rather than direct repository access, so the model cannot
-  bypass the API boundary.
-- CSV-derived retrieval documents for tests and DB-derived documents in
-  production, with the same document contract.
-- A conservative generated-prose guard on top of the structural success event.
+After successful `main` CI, the tested image is published to GHCR. A self-hosted
+Tailscale runner deploys it by digest over SSH without rebuilding on the VM.
+Production Compose publishes no app port; Cloudflare Tunnel supplies HTTPS.
+Deployment runs migrations and checks readiness, routing, and authentication.
+Failure restores the previous image when available, retaining the database
+volume. Migrations must therefore support the previous application version.
 
-Limitations:
+The [deployment record](docs/deployment-record.md) documents historical checks,
+infrastructure deviations, and the forced-failure rollback drill.
 
-- Shared password and single patient; no registration or multi-patient auth.
-- No availability/conflict detection, diagnosis, or prescribing. Delete and
-  reschedule are explicit demo actions; delete is a tombstone, not hard removal.
-- In-process locks and SQLite do not scale horizontally; the MVP is one worker.
-- An in-flight turn is marked `in_progress` and a concurrent duplicate receives a
-  retryable `409`. Startup recovery releases turns orphaned by a previous
-  process, replaying a committed booking response or making the turn retryable
-  with the same message ID.
-- Automatic deployment depends on external VM, tailnet, Cloudflare, and GHCR
-  configuration. It fails closed when those are unavailable and does not claim
-  success without direct readiness and public-route evidence.
-- Remote GitHub Actions, GHCR publication, digest promotion, branch protection,
-  and a forced-failure rollback drill are recorded in
-  `docs/deployment-record.md`. The deployment runner is a repository-scoped
-  self-hosted tailnet member rather than an ephemeral GitHub-hosted Tailscale
-  runner, and the VM runs on `enterprise` because `cerritos` lacks KVM.
-- The planned `cerritos` node cannot run QEMU guests (no KVM), so the recovered
-  VM runs on `enterprise` with the same CPU/RAM/disk shape.
-- The public image contains no production prefix or credentials; the demo URL
-  and password are handed over privately, not in this document.
+## Current Limits
+
+The demo has no registration, multi-patient accounts, distributed turn queue,
+or support for multiple backend workers. Booking edits and removal are local
+demo actions, not integration with a clinic scheduling system. The assistant
+reads existing medical records but is not designed to diagnose or prescribe.
+
+Saved conversations can outgrow the bounded model context; there is no automatic
+transcript summarization. Search covers a small supplied catalog, and model
+answers still require evaluation. Persistent bookings, explicit confirmation,
+and source inspection make behavior easier to verify; they do not make the
+system a production healthcare product.
+
+The optional speech transcript-to-medical-JSON summarizer is not implemented.
+Observability is provided by persisted application traces and Explorer rather
+than a Langfuse integration.

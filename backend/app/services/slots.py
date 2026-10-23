@@ -135,6 +135,11 @@ def next_step_for_draft(
             booking_id=draft.booking_id,
             message="This booking is already confirmed.",
         )
+    if draft.status == DraftStatus.CANCELLED.value:
+        return NextStep(
+            kind="collect_details",
+            message="That booking draft is closed. Tell me the details for a new booking.",
+        )
     missing = list(draft.missing_fields)
     if not draft.doctor_id or not draft.treatment_id:
         return NextStep(

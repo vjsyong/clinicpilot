@@ -42,8 +42,9 @@ def booking_view_from_draft(draft: BookingDraftView) -> BookingView | None:
 
     The draft and booking row are committed in the same transaction, so a draft
     marked booked with a booking id is sufficient evidence that the booking was
-    persisted. Missing canonical fields make the projection unavailable rather
-    than inventing values.
+    persisted. It does not prove the row is still active: callers that report
+    success must exclude tombstoned bookings. Missing canonical fields make the
+    projection unavailable rather than inventing values.
     """
     required = (
         draft.booking_id,

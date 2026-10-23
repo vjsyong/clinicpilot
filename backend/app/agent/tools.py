@@ -10,6 +10,7 @@ import asyncio
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -80,8 +81,13 @@ def booking_tool_result(booking: BookingView) -> ToolResult:
     return ToolResult.ok({"booking": booking.model_dump(mode="json")})
 
 
-def bookings_tool_result(bookings: Sequence[BookingView]) -> ToolResult:
-    return ToolResult.ok({"bookings": [booking.model_dump(mode="json") for booking in bookings]})
+def bookings_tool_result(bookings: Sequence[BookingView], *, now: datetime) -> ToolResult:
+    items: list[dict[str, Any]] = []
+    for booking in bookings:
+        item = booking.model_dump(mode="json")
+        item["is_upcoming"] = booking.starts_at_utc >= now and booking.status.lower() != "cancelled"
+        items.append(item)
+    return ToolResult.ok({"bookings": items})
 
 
 def invalid_tool_result(call: ModelToolCall, message: str) -> ToolResult:

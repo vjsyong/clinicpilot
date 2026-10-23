@@ -806,6 +806,132 @@ async def test_delete_is_not_executed_by_a_non_confirmation() -> None:
     assert harness.booking_api.delete_calls == []
 
 
+async def test_deleting_the_current_created_booking_clears_the_draft() -> None:
+    booking = booking_view(booking_id="B2001")
+    booked_draft = complete_draft(status=DraftStatus.BOOKED.value, presented=None).model_copy(
+        update={"booking_id": "B2001"}
+    )
+    harness = build_harness(
+        [
+            tool_response(tool_call("delete_patient_booking", '{"booking_id":"B2001"}')),
+            text_response("I can remove that booking."),
+        ],
+        draft=booked_draft,
+        booking_api=FakeBookingApi(bookings=[booking], delete_result=booking),
+    )
+
+    first = await harness.controller.handle_turn(harness.ctx("Delete booking B2001"))
+    assert first.next_step is not None
+    assert first.next_step.kind == "confirm_action"
+
+    second = await harness.controller.handle_turn(harness.ctx("yes"))
+
+    assert harness.booking_api.delete_calls == ["B2001"]
+    assert harness.drafts.abandoned == 1
+    assert second.booking_draft is None
+    assert second.events[0].type == "booking_deleted"
+
+
+async def test_yes_does_not_recover_a_booked_draft_without_a_pending_action() -> None:
+    draft = complete_draft(status=DraftStatus.BOOKED.value, presented=None).model_copy(
+        update={"booking_id": "B2001"}
+    )
+    harness = build_harness([text_response("I can help with that.")], draft=draft)
+
+    result = await harness.controller.handle_turn(harness.ctx("yes"))
+
+    assert harness.booking_api.create_calls == []
+    assert "Booking confirmed." not in result.assistant_message
+
+
+async def test_bulk_delete_proposals_are_confirmed_and_deleted_together() -> None:
+    first_booking = booking_view(booking_id="B2001")
+    second_booking = booking_view(booking_id="B2002", local_time="10:00")
+    harness = build_harness(
+        [
+            tool_response(
+                tool_call("delete_patient_booking", '{"booking_id":"B2001"}', "call-1"),
+                tool_call("delete_patient_booking", '{"booking_id":"B2002"}', "call-2"),
+            ),
+            text_response("I can remove both bookings."),
+        ],
+        booking_api=FakeBookingApi(bookings=[first_booking, second_booking]),
+    )
+
+    first = await harness.controller.handle_turn(harness.ctx("Cancel all of my bookings"))
+
+    assert first.next_step is not None
+    assert first.next_step.kind == "confirm_action"
+    assert [booking.booking_id for booking in first.next_step.action_bookings] == [
+        "B2001",
+        "B2002",
+    ]
+    assert harness.booking_api.delete_calls == []
+
+    second = await harness.controller.handle_turn(harness.ctx("yes"))
+
+    assert harness.booking_api.delete_calls == ["B2001", "B2002"]
+    assert [event.booking.booking_id for event in second.events if event.booking is not None] == [
+        "B2001",
+        "B2002",
+    ]
+    assert "B2001" in second.assistant_message
+    assert "B2002" in second.assistant_message
+
+
+async def test_bulk_delete_reports_partial_failures() -> None:
+    first_booking = booking_view(booking_id="B2001")
+    second_booking = booking_view(booking_id="B2002", local_time="10:00")
+    harness = build_harness(
+        [
+            tool_response(
+                tool_call("delete_patient_booking", '{"booking_id":"B2001"}', "call-1"),
+                tool_call("delete_patient_booking", '{"booking_id":"B2002"}', "call-2"),
+            ),
+            text_response("I can remove both bookings."),
+        ],
+        booking_api=FakeBookingApi(
+            bookings=[first_booking, second_booking],
+            delete_errors={"B2002": BookingApiError("Booking service unavailable.")},
+        ),
+    )
+
+    await harness.controller.handle_turn(harness.ctx("Cancel all of my bookings"))
+    result = await harness.controller.handle_turn(harness.ctx("yes"))
+
+    assert harness.booking_api.delete_calls == ["B2001", "B2002"]
+    assert [event.booking.booking_id for event in result.events if event.booking] == ["B2001"]
+    assert "B2001" in result.assistant_message
+    assert "Could not remove: B2002" in result.assistant_message
+
+
+async def test_delete_confirmation_is_bound_to_the_last_assistant_message() -> None:
+    booking = booking_view(booking_id="B2001")
+    harness = build_harness(
+        [
+            tool_response(tool_call("delete_patient_booking", '{"booking_id":"B2001"}')),
+            text_response("I can remove that booking."),
+            text_response("Anything else?"),
+        ],
+        booking_api=FakeBookingApi(bookings=[booking], delete_result=booking),
+    )
+
+    first = await harness.controller.handle_turn(harness.ctx("Delete booking B2001"))
+    assert first.next_step is not None
+    assert first.next_step.kind == "confirm_action"
+
+    harness.conversations.messages.append(
+        {
+            "role": "assistant",
+            "content": "Anything else?",
+            "_cp_message_id": "other-message",
+        }
+    )
+    await harness.controller.handle_turn(harness.ctx("yes"))
+
+    assert harness.booking_api.delete_calls == []
+
+
 async def test_reset_is_proposed_but_never_executed_by_the_model() -> None:
     harness = build_harness(
         [

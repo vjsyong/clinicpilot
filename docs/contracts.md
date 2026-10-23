@@ -105,7 +105,8 @@ occur:
 - `sources`: `{sources: [SourceRef]}`
 - `draft`: `{draft: BookingDraftView}`
 - `next_step`: the state-aware `NextStep` (`choose_slot`, `confirm_booking`,
-  `collect_details`, `confirm_action`, or `completed`)
+  `collect_details`, `confirm_action`, or `completed`). A batch delete
+  confirmation carries the enumerated bookings in `action_bookings`.
 - `done`: the complete `ChatResponse`
 - `error`: `{code, message, retryable}`
 - `stopped`: the turn was cancelled
@@ -264,6 +265,10 @@ Confirmation rule (conservative, server-side):
   `book it`, `yes book it`, `yes confirm`, `please book it`.
 - Case/whitespace/terminal punctuation are normalized. Any correction or extra
   instruction is not a confirmation.
+- An affirmative authorizes only the action described by the immediately
+  preceding assistant message. A delete confirmation is bound to that message
+  and to the exact booking IDs it enumerated; if another assistant message
+  intervenes, the affirmative is not applied to the old proposal.
 - An interruption clears the presented marker before the provider call, so a
   provider failure cannot leave the old summary authorized. A fresh summary is
   required before the next confirmation.
@@ -282,8 +287,13 @@ Confirmation rule (conservative, server-side):
   same explicit confirmation accepted by the server.
 - `update_booking_draft` with `booking_id` starts an edit draft. Confirmation
   updates that row instead of inserting a new booking. Deletion proposals always
-  require a separate confirmation turn; the row is tombstoned and the audit is
-  retained.
+  require a separate confirmation turn; the row is tombstoned, matching drafts
+  are cancelled, and the audit is retained. A batch deletion enumerates every
+  booking in one confirmation and deletes exactly that set.
+- A tombstoned booking is never returned by an idempotent create replay; the
+  replay fails with `idempotency_conflict` instead of reporting success.
+- `get_patient_bookings` marks each item with `is_upcoming`; past and cancelled
+  bookings are not presented as upcoming.
 - Patient-reported symptoms are captured into empty draft notes as
   `Patient reports: <exact words>`; the model never diagnoses or infers severity.
 

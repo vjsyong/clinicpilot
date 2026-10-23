@@ -713,6 +713,77 @@ async def test_deleting_a_booking_hides_it_but_keeps_the_row(
 
 
 @pytest.mark.asyncio
+async def test_deleting_a_booking_cancels_its_draft(
+    db: DBHarness, frozen_clock: FrozenClock
+) -> None:
+    from app.db.models import BookingDraft
+
+    _session, conversation_id = await _new_conversation(db, frozen_clock)
+    drafts = _drafts(db, frozen_clock)
+    bookings = _bookings(db, frozen_clock)
+
+    update = await drafts.update(
+        conversation_id,
+        {
+            "doctor_id": "D104",
+            "treatment_id": "T005",
+            "local_date": "2026-11-20",
+            "local_time": "11:00",
+        },
+    )
+    assert update.draft is not None
+    await drafts.mark_presented(conversation_id, "assistant-created", update.draft.version)
+    await drafts.authorize(conversation_id, "turn-created")
+    key = f"booking:{update.draft.draft_id}:v{update.draft.version}"
+    view, created = await bookings.create_from_draft(
+        update.draft.draft_id, update.draft.version, key
+    )
+    assert created is True
+
+    await bookings.delete_booking(view.booking_id, reason="test cancellation")
+
+    assert await drafts.get(conversation_id) is None
+    with db.session_factory() as session:
+        draft_row = session.scalars(
+            select(BookingDraft).where(BookingDraft.conversation_id == conversation_id)
+        ).one()
+        assert draft_row.status == DraftStatus.CANCELLED.value
+        assert draft_row.confirmation_message_id is None
+
+
+@pytest.mark.asyncio
+async def test_replaying_a_deleted_booking_is_a_conflict(
+    db: DBHarness, frozen_clock: FrozenClock
+) -> None:
+    _session, conversation_id = await _new_conversation(db, frozen_clock)
+    drafts = _drafts(db, frozen_clock)
+    bookings = _bookings(db, frozen_clock)
+
+    update = await drafts.update(
+        conversation_id,
+        {
+            "doctor_id": "D104",
+            "treatment_id": "T005",
+            "local_date": "2026-11-20",
+            "local_time": "11:00",
+        },
+    )
+    assert update.draft is not None
+    await drafts.mark_presented(conversation_id, "assistant-replay", update.draft.version)
+    await drafts.authorize(conversation_id, "turn-replay")
+    key = f"booking:{update.draft.draft_id}:v{update.draft.version}"
+    view, created = await bookings.create_from_draft(
+        update.draft.draft_id, update.draft.version, key
+    )
+    assert created is True
+
+    await bookings.delete_booking(view.booking_id, reason="test cancellation")
+
+    with pytest.raises(IdempotencyConflictError):
+        await bookings.create_from_draft(update.draft.draft_id, update.draft.version, key)
+
+
+@pytest.mark.asyncio
 async def test_workspace_reset_restores_seed_bookings_and_clears_chats(
     db: DBHarness, frozen_clock: FrozenClock
 ) -> None:

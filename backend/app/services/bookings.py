@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, time
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -98,9 +98,30 @@ class BookingService:
             if doctor is None or treatment is None:
                 raise InvalidBookingDetailsError("The booking references missing data.")
             clinic = session.get(Clinic, doctor.clinic_id)
+            now = self._clock.now()
+            changed = False
             if booking.deleted_at is None:
-                booking.deleted_at = self._clock.now()
+                booking.deleted_at = now
                 booking.deleted_reason = (reason or "Deleted from the workbench")[:500]
+                changed = True
+            drafts = session.scalars(
+                select(BookingDraft).where(
+                    or_(
+                        BookingDraft.booking_id == booking_id,
+                        BookingDraft.editing_booking_id == booking_id,
+                    )
+                )
+            ).all()
+            for draft in drafts:
+                if draft.status == DraftStatus.CANCELLED.value:
+                    continue
+                draft.status = DraftStatus.CANCELLED.value
+                draft.confirmation_message_id = None
+                draft.confirmation_version = None
+                draft.authorized_turn_id = None
+                draft.updated_at = now
+                changed = True
+            if changed:
                 session.commit()
             return booking_view_from_models(booking, doctor, treatment, clinic)
         except Exception:
@@ -298,6 +319,10 @@ class BookingService:
     def _recover(
         session: Session, booking: PatientBooking, draft: BookingDraft
     ) -> tuple[BookingView, bool]:
+        if booking.deleted_at is not None:
+            raise IdempotencyConflictError(
+                "That booking was cancelled. Start a new booking instead."
+            )
         if not _booking_matches_draft(booking, draft):
             raise IdempotencyConflictError()
         doctor = session.get(Doctor, booking.doctor_id)

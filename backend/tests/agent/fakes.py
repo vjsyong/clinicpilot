@@ -242,6 +242,7 @@ class FakeBookingApi:
     delete_calls: list[str] = field(default_factory=list)
     delete_result: BookingView | None = None
     delete_error: Exception | None = None
+    delete_errors: dict[str, Exception] = field(default_factory=dict)
 
     async def list_bookings(self, patient_id: str = PATIENT_ID) -> list[BookingView]:
         self.list_calls.append(patient_id)
@@ -255,16 +256,24 @@ class FakeBookingApi:
             raise self.create_error
         if self.create_result is None:
             raise AssertionError("FakeBookingApi has no create_result")
+        if all(booking.booking_id != self.create_result.booking_id for booking in self.bookings):
+            self.bookings.append(self.create_result)
         return self.create_result
 
     async def delete_booking(self, booking_id: str) -> BookingView:
         self.delete_calls.append(booking_id)
+        if booking_id in self.delete_errors:
+            raise self.delete_errors[booking_id]
         if self.delete_error is not None:
             raise self.delete_error
         if self.delete_result is not None:
+            self.bookings = [
+                booking for booking in self.bookings if booking.booking_id != booking_id
+            ]
             return self.delete_result
-        for booking in self.bookings:
+        for index, booking in enumerate(self.bookings):
             if booking.booking_id == booking_id:
+                self.bookings.pop(index)
                 return booking
         raise AssertionError("FakeBookingApi has no matching booking")
 

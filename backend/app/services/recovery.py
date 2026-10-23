@@ -92,13 +92,25 @@ def _recover_turn(session: Session, turn: ChatTurn, clock: Clock) -> bool:
 def _committed_booking(session: Session, draft: BookingDraft) -> PatientBooking | None:
     if draft.booking_id is not None:
         booking = session.get(PatientBooking, draft.booking_id)
-        if booking is not None:
+        if booking is not None and booking.deleted_at is None:
             return booking
     key = f"booking:{draft.id}:v{draft.version}"
-    return session.scalar(select(PatientBooking).where(PatientBooking.idempotency_key == key))
+    return session.scalar(
+        select(PatientBooking).where(
+            PatientBooking.idempotency_key == key,
+            PatientBooking.deleted_at.is_(None),
+        )
+    )
 
 
 def _release_draft(draft: BookingDraft, session: Session, clock: Clock) -> None:
+    if _references_deleted_booking(session, draft):
+        draft.status = DraftStatus.CANCELLED.value
+        draft.confirmation_message_id = None
+        draft.confirmation_version = None
+        draft.authorized_turn_id = None
+        draft.updated_at = clock.now()
+        return
     view = draft_view(session, draft)
     draft.status = (
         DraftStatus.AWAITING_CONFIRMATION.value
@@ -107,6 +119,16 @@ def _release_draft(draft: BookingDraft, session: Session, clock: Clock) -> None:
     )
     draft.authorized_turn_id = None
     draft.updated_at = clock.now()
+
+
+def _references_deleted_booking(session: Session, draft: BookingDraft) -> bool:
+    for booking_id in (draft.booking_id, draft.editing_booking_id):
+        if booking_id is None:
+            continue
+        booking = session.get(PatientBooking, booking_id)
+        if booking is not None and booking.deleted_at is not None:
+            return True
+    return False
 
 
 def _fail_turn(turn: ChatTurn, clock: Clock) -> None:

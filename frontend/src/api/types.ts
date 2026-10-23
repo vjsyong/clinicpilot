@@ -69,6 +69,7 @@ export interface NextStep {
   action_id?: string | null;
   booking_id?: string | null;
   action_booking?: BookingView | null;
+  action_bookings?: BookingView[] | null;
   message?: string | null;
 }
 

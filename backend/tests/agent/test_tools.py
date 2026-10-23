@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 import pytest
-from app.agent.tools import BookingApiError, RestBookingApi
+from app.agent.tools import BookingApiError, RestBookingApi, bookings_tool_result
 from app.settings import Settings
 from tests.agent.fakes import booking_view
 
@@ -152,3 +153,20 @@ async def test_invalid_payload_is_rejected() -> None:
         api = RestBookingApi(_settings(), client=client)
         with pytest.raises(BookingApiError):
             await api.create_booking("draft-7", 3)
+
+
+def test_bookings_tool_result_marks_upcoming_and_past() -> None:
+    now = datetime(2026, 10, 22, 12, 0, tzinfo=UTC)
+    upcoming = booking_view(booking_id="B2001")
+    past = booking_view(
+        booking_id="B2002",
+        local_date="2026-10-20",
+        starts_at_utc=datetime(2026, 10, 20, 14, 0, tzinfo=UTC),
+    )
+
+    result = bookings_tool_result([upcoming, past], now=now)
+    items = result.payload["bookings"]
+
+    assert [item["booking_id"] for item in items] == ["B2001", "B2002"]
+    assert items[0]["is_upcoming"] is True
+    assert items[1]["is_upcoming"] is False

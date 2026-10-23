@@ -141,28 +141,42 @@ function ConfirmActionCard({
     );
   }
   const booking = step.action_booking;
-  if (!booking) {
+  const bookings =
+    step.action_bookings && step.action_bookings.length > 0
+      ? step.action_bookings
+      : booking
+        ? [booking]
+        : [];
+  if (bookings.length === 0) {
     return null;
   }
+  const multiple = bookings.length > 1;
   return (
     <div className="proposal" data-testid="confirm-action">
       <div className="p-tag">Confirm action</div>
       <div className="spread">
-        <b>Delete booking {booking.booking_id}</b>
+        <b>
+          {multiple
+            ? `Delete ${bookings.length} bookings`
+            : `Delete booking ${bookings[0].booking_id}`}
+        </b>
         <span className="badge warn">needs confirmation</span>
       </div>
-      <div className="kv">
-        <span className="k">Doctor</span>
-        <span>{booking.doctor_name}</span>
-        <span className="k">Treatment</span>
-        <span>{booking.treatment_name}</span>
-        <span className="k">Appointment</span>
-        <span>
-          {booking.local_date} at {booking.local_time} ({booking.timezone})
-        </span>
+      <div className="stack">
+        {bookings.map((item) => (
+          <div key={item.booking_id}>
+            <b>{item.booking_id}</b>
+            <div className="sub">
+              {item.doctor_name} · {item.treatment_name} · {item.local_date} at{" "}
+              {item.local_time} ({item.timezone})
+            </div>
+          </div>
+        ))}
       </div>
       <p className="sub">
-        This hides the booking from the active list. The audit record is retained.
+        {multiple
+          ? "This hides the bookings from the active list. Their audit records are retained."
+          : "This hides the booking from the active list. The audit record is retained."}
       </p>
       <div className="row">
         <button
@@ -172,7 +186,7 @@ function ConfirmActionCard({
           disabled={inFlight || !onConfirm}
           onClick={onConfirm}
         >
-          Delete booking
+          {multiple ? `Delete ${bookings.length} bookings` : "Delete booking"}
         </button>
       </div>
     </div>

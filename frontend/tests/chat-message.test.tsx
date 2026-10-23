@@ -85,6 +85,28 @@ describe("ChatMessageView action cards", () => {
     expect(html).not.toContain('data-testid="booking-draft"');
   });
 
+  it("renders every booking in a batch delete confirmation", () => {
+    const secondBooking: BookingView = {
+      ...booking,
+      booking_id: "B2002",
+      local_time: "10:00",
+    };
+    const html = render(
+      assistantMessage({
+        text: "Delete these 2 bookings?",
+        nextStep: {
+          ...deleteStep,
+          action_bookings: [booking, secondBooking],
+          message: "Delete these 2 bookings?",
+        },
+      }),
+    );
+
+    expect(html).toContain("Delete 2 bookings");
+    expect(html).toContain("B2001");
+    expect(html).toContain("B2002");
+  });
+
   it("still renders the booking draft when there is no action card", () => {
     const html = render(
       assistantMessage({

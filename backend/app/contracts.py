@@ -120,6 +120,7 @@ class NextStep(BaseModel):
     action_id: str | None = None
     booking_id: str | None = None
     action_booking: BookingView | None = None
+    action_bookings: list[BookingView] = Field(default_factory=list)
     message: str | None = None
 
 

@@ -15,6 +15,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from app.agent.model_client import DeepSeekModelClient
@@ -157,6 +158,12 @@ class _ToolOutcome:
     presentation_changed: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class _PendingDelete:
+    message_id: str
+    bookings: tuple[BookingView, ...]
+
+
 class AgentController:
     """Implements ``app.contracts.AgentController`` with injectable dependencies."""
 
@@ -186,17 +193,22 @@ class AgentController:
         # ``None`` means this conversation's presented marker was explicitly
         # cleared, which prevents an in-process stale summary from authorizing.
         self._presented: dict[str, tuple[int, str] | None] = {}
-        self._pending_delete: dict[str, str] = {}
+        self._pending_delete: dict[str, _PendingDelete] = {}
 
     async def handle_turn(self, ctx: TurnContext, emit: EventEmitter | None = None) -> TurnResult:
         await _emit(emit, "status", {"stage": "thinking"})
         messages = list(await self._conversations.load_messages(ctx.conversation_id))
-        pending_delete = self._pending_delete.pop(ctx.conversation_id, None)
-        if pending_delete is not None and is_confirmation_phrase(ctx.user_text):
-            return await self._delete_booking_turn(ctx, messages, pending_delete)
         draft = await self._drafts.get(ctx.conversation_id)
         last_assistant_id = await self._conversations.last_assistant_message_id(ctx.conversation_id)
         _last_id, last_assistant_content, last_presentation = _last_assistant(messages)
+        pending_delete = self._pending_delete.pop(ctx.conversation_id, None)
+        confirmation_message_id = _last_id or last_assistant_id
+        if (
+            pending_delete is not None
+            and is_confirmation_phrase(ctx.user_text)
+            and pending_delete.message_id == confirmation_message_id
+        ):
+            return await self._delete_bookings_turn(ctx, messages, pending_delete)
 
         if not _already_appended(messages, ctx):
             messages.append(
@@ -219,19 +231,6 @@ class AgentController:
             return await self._confirmation_turn(ctx, messages, emit)
 
         await self._invalidate_presentation(ctx.conversation_id)
-
-        # A committed booking may still need to be reported after a lost
-        # response. Only a confirmation retry uses this recovery path; ordinary
-        # follow-up questions continue normally.
-        if (
-            draft is not None
-            and draft.status == DraftStatus.BOOKED.value
-            and is_confirmation_phrase(ctx.user_text)
-        ):
-            recovered = await self._booked_success(ctx, messages, draft)
-            if recovered is not None:
-                return recovered
-
         return await self._normal_turn(ctx, messages, draft, emit)
 
     async def _confirmation_turn(
@@ -254,6 +253,7 @@ class AgentController:
 
         booking: BookingView | None = None
         failure_message: str | None = None
+        failure_retryable = True
         await _emit(emit, "status", {"stage": "booking"})
         await _emit(
             emit,
@@ -270,6 +270,7 @@ class AgentController:
             )
         except BookingApiError as exc:
             failure_message = exc.safe_message
+            failure_retryable = exc.retryable
         except Exception as exc:
             logger.warning("Booking API failure (%s).", type(exc).__name__)
             failure_message = INTERNAL_BOOKING_FAILURE_MESSAGE
@@ -289,7 +290,7 @@ class AgentController:
             },
         )
 
-        if failure_message is not None:
+        if failure_message is not None and failure_retryable:
             recovered = await self._recover_after_failed_booking(ctx, messages)
             if recovered is not None:
                 return recovered
@@ -311,6 +312,7 @@ class AgentController:
                 messages,
                 authorized,
                 failure_message or INTERNAL_BOOKING_FAILURE_MESSAGE,
+                allow_recovery=failure_retryable,
             )
 
         try:
@@ -422,9 +424,11 @@ class AgentController:
         messages: list[dict[str, Any]],
         authorized: BookingDraftView,
         message: str,
+        *,
+        allow_recovery: bool = False,
     ) -> TurnResult:
         view = await self._current_draft(ctx.conversation_id)
-        if view is not None and view.status == DraftStatus.BOOKED.value:
+        if allow_recovery and view is not None and view.status == DraftStatus.BOOKED.value:
             recovered = await self._booked_success(ctx, messages, view)
             if recovered is not None:
                 return recovered
@@ -482,11 +486,11 @@ class AgentController:
             next_step=next_step_for_draft(view, ctx.user_text, ctx.now),
         )
 
-    async def _delete_booking_turn(
+    async def _delete_bookings_turn(
         self,
         ctx: TurnContext,
         messages: list[dict[str, Any]],
-        booking_id: str,
+        pending: _PendingDelete,
     ) -> TurnResult:
         if not _already_appended(messages, ctx):
             messages.append(
@@ -496,34 +500,64 @@ class AgentController:
                     "_cp_message_id": ctx.turn_id,
                 }
             )
-        try:
-            booking = await self._booking_api.delete_booking(booking_id)
-        except BookingApiError:
-            view = await self._current_draft(ctx.conversation_id)
-            return await self._finish_failure(ctx, messages, view, DELETE_FAILURE_MESSAGE)
-        except Exception as exc:
-            logger.warning("Booking delete failed (%s).", type(exc).__name__)
-            view = await self._current_draft(ctx.conversation_id)
-            return await self._finish_failure(ctx, messages, view, DELETE_FAILURE_MESSAGE)
+
+        deleted: list[BookingView] = []
+        failed: list[tuple[BookingView, str]] = []
+        for booking in pending.bookings:
+            try:
+                removed = await self._booking_api.delete_booking(booking.booking_id)
+            except BookingApiError as exc:
+                failed.append((booking, exc.safe_message))
+                continue
+            except Exception as exc:
+                logger.warning("Booking delete failed (%s).", type(exc).__name__)
+                failed.append((booking, DELETE_FAILURE_MESSAGE))
+                continue
+            deleted.append(removed)
+            await self._audit_record(
+                ctx,
+                "action",
+                "booking_deleted",
+                "ok",
+                {"booking": removed.model_dump(mode="json")},
+            )
 
         view = await self._current_draft(ctx.conversation_id)
-        if view is not None and view.editing_booking_id == booking_id:
+        deleted_ids = {booking.booking_id for booking in deleted}
+        if (
+            view is not None
+            and view.status != DraftStatus.CANCELLED.value
+            and deleted_ids.intersection({view.booking_id, view.editing_booking_id})
+        ):
             try:
                 await self._drafts.abandon(ctx.conversation_id)
             except Exception as exc:
                 logger.warning("Could not cancel the deleted draft (%s).", type(exc).__name__)
             view = await self._current_draft(ctx.conversation_id)
-        await self._audit_record(
-            ctx,
-            "action",
-            "booking_deleted",
-            "ok",
-            {"booking": booking.model_dump(mode="json")},
-        )
-        text = (
-            f"Booking {booking.booking_id} was removed from the active list. "
-            "Its audit record is retained."
-        )
+        if view is not None and view.status == DraftStatus.CANCELLED.value:
+            view = None
+
+        if not deleted:
+            detail = failed[0][1] if failed else DELETE_FAILURE_MESSAGE
+            return await self._finish_failure(
+                ctx, messages, view, f"{DELETE_FAILURE_MESSAGE} {detail}".strip()
+            )
+
+        if len(deleted) == 1:
+            text = (
+                f"Booking {deleted[0].booking_id} was removed from the active list. "
+                "Its audit record is retained."
+            )
+        else:
+            ids = ", ".join(booking.booking_id for booking in deleted)
+            text = (
+                f"Bookings {ids} were removed from the active list. "
+                "Their audit records are retained."
+            )
+        if failed:
+            ids = ", ".join(booking.booking_id for booking, _message in failed)
+            text = f"{text}\n\nCould not remove: {ids}. The active list was not changed for those."
+
         assistant_id = str(uuid.uuid4())
         messages.append(_assistant_text_message(text, assistant_id))
         await self._conversations.save_messages(ctx.conversation_id, messages, ctx.now)
@@ -532,7 +566,7 @@ class AgentController:
             assistant_message=text,
             sources=[],
             booking_draft=view,
-            events=[Event(type="booking_deleted", booking=booking)],
+            events=[Event(type="booking_deleted", booking=booking) for booking in deleted],
             next_step=next_step_for_draft(view, ctx.user_text, ctx.now),
         )
 
@@ -661,7 +695,7 @@ class AgentController:
         definitions = tool_definitions()
         sources: dict[tuple[str, str], SourceRef] = {}
         presentation: BookingDraftView | None = None
-        delete_proposal: BookingView | None = None
+        delete_proposals: dict[str, BookingView] = {}
         reset_proposal = False
         final_text = ""
 
@@ -730,9 +764,11 @@ class AgentController:
                     payload.get("booking"), dict
                 ):
                     try:
-                        delete_proposal = BookingView.model_validate(payload["booking"])
+                        proposal = BookingView.model_validate(payload["booking"])
                     except ValueError:
-                        delete_proposal = None
+                        proposal = None
+                    if proposal is not None:
+                        delete_proposals[proposal.booking_id] = proposal
                 await _emit(
                     emit,
                     "tool_end",
@@ -771,15 +807,18 @@ class AgentController:
             )
             final_text = step.message or ""
             presented_view = None
-        elif delete_proposal is not None:
+        elif delete_proposals:
+            proposed = list(delete_proposals.values())
+            question = _delete_question(proposed)
             step = NextStep(
                 kind="confirm_action",
-                action_id=delete_proposal.booking_id,
-                booking_id=delete_proposal.booking_id,
-                action_booking=delete_proposal,
-                message=_delete_question(delete_proposal),
+                action_id=proposed[0].booking_id,
+                booking_id=proposed[0].booking_id,
+                action_booking=proposed[0],
+                action_bookings=proposed,
+                message=question,
             )
-            final_text = _delete_question(delete_proposal)
+            final_text = question
             presented_view = None
 
         # An incomplete draft must never end in a premature confirmation
@@ -874,6 +913,13 @@ class AgentController:
 
         final_text = _humanize_field_names(final_text)
         messages.append(_assistant_text_message(final_text, assistant_id, presented_view))
+        if delete_proposals and not reset_proposal:
+            self._pending_delete[ctx.conversation_id] = _PendingDelete(
+                message_id=assistant_id,
+                bookings=tuple(delete_proposals.values()),
+            )
+        else:
+            self._pending_delete.pop(ctx.conversation_id, None)
         await self._conversations.save_messages(ctx.conversation_id, messages, ctx.now)
         await _emit(
             emit,
@@ -883,10 +929,10 @@ class AgentController:
         # A delete/reset proposal is its own action card. Attaching the
         # conversation's previous draft would render a second, unrelated card
         # (for example a stale "booked" summary) under the same reply.
-        card_view = None if (delete_proposal is not None or reset_proposal) else view
+        card_view = None if (delete_proposals or reset_proposal) else view
         if card_view is not None:
             await _emit(emit, "draft", {"draft": card_view.model_dump(mode="json")})
-        if delete_proposal is None and not reset_proposal:
+        if not delete_proposals and not reset_proposal:
             if (
                 view is not None
                 and view.status == DraftStatus.AWAITING_CONFIRMATION.value
@@ -983,7 +1029,7 @@ class AgentController:
         if call.name == "get_patient_record":
             return await self._get_patient_record()
         if call.name == "get_patient_bookings":
-            return await self._list_bookings()
+            return await self._list_bookings(ctx.now)
         if call.name == "update_booking_draft":
             return await self._update_draft(ctx, arguments)
         if call.name == "delete_patient_booking":
@@ -1087,7 +1133,7 @@ class AgentController:
             )
         return _ToolOutcome(ToolResult.ok({"record": value}))
 
-    async def _list_bookings(self) -> _ToolOutcome:
+    async def _list_bookings(self, now: datetime) -> _ToolOutcome:
         try:
             bookings = await self._booking_api.list_bookings(PATIENT_ID)
         except BookingApiError as exc:
@@ -1102,7 +1148,7 @@ class AgentController:
                     code="booking_read_failed",
                 )
             )
-        return _ToolOutcome(bookings_tool_result(bookings))
+        return _ToolOutcome(bookings_tool_result(bookings, now=now))
 
     async def _update_draft(
         self,
@@ -1183,7 +1229,6 @@ class AgentController:
                     code="booking_not_found",
                 )
             )
-        self._pending_delete[ctx.conversation_id] = booking_id
         return _ToolOutcome(
             ToolResult.ok(
                 {
@@ -1436,11 +1481,22 @@ def _humanize_field_names(text: str) -> str:
     return text
 
 
-def _delete_question(booking: BookingView) -> str:
+def _delete_question(bookings: Sequence[BookingView]) -> str:
+    if len(bookings) == 1:
+        booking = bookings[0]
+        return (
+            f"Delete booking {booking.booking_id} ({booking.local_date} at "
+            f"{booking.local_time}, {booking.doctor_name})? This hides it from the "
+            "active list and keeps the audit record. Reply yes or use Delete in Bookings."
+        )
+    details = "; ".join(
+        f"{booking.booking_id} ({booking.local_date} at {booking.local_time}, "
+        f"{booking.doctor_name})"
+        for booking in bookings
+    )
     return (
-        f"Delete booking {booking.booking_id} ({booking.local_date} at "
-        f"{booking.local_time}, {booking.doctor_name})? This hides it from the "
-        "active list and keeps the audit record. Reply yes or use Delete in Bookings."
+        f"Delete these {len(bookings)} bookings? {details}. This hides them from the "
+        "active list and keeps the audit records. Reply yes or use Delete in Bookings."
     )
 
 

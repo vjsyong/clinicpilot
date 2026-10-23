@@ -54,11 +54,7 @@ def is_container(path: str) -> bool:
         return True
     if path.startswith(("compose.", "tests/e2e/")):
         return True
-    return path in {
-        "scripts/smoke_test.py",
-        ".github/workflows/ci.yml",
-        ".github/workflows/deploy.yml",
-    }
+    return path == "scripts/smoke_test.py"
 
 
 def classify(files: Iterable[str]) -> dict[str, bool]:

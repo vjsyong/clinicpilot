@@ -49,27 +49,17 @@ class ChangedDomainsTest(unittest.TestCase):
         self.assertTrue(domains["container"])
         self.assertTrue(domains["security"])
 
-    def test_ci_workflow_change_runs_the_container_job(self) -> None:
-        self.assertEqual(
-            classify([".github/workflows/ci.yml"]),
-            {
-                "backend": False,
-                "frontend": False,
-                "security": True,
-                "container": True,
-            },
-        )
-
-    def test_deploy_workflow_change_runs_the_container_job(self) -> None:
-        self.assertEqual(
-            classify([".github/workflows/deploy.yml"]),
-            {
-                "backend": False,
-                "frontend": False,
-                "security": True,
-                "container": True,
-            },
-        )
+    def test_workflow_changes_are_security_only(self) -> None:
+        for path in (".github/workflows/ci.yml", ".github/workflows/deploy.yml"):
+            self.assertEqual(
+                classify([path]),
+                {
+                    "backend": False,
+                    "frontend": False,
+                    "security": True,
+                    "container": False,
+                },
+            )
 
 
 if __name__ == "__main__":

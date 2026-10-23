@@ -60,6 +60,35 @@ button.nav-item {
   }
 }
 
+.assistant-page .chat-rail {
+  overflow-x: hidden;
+}
+
+.assistant-page .chat-rail .arow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  align-items: center;
+}
+
+.assistant-page .chat-rail .arow .t {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  overflow: hidden;
+}
+
+.assistant-page .chat-rail .arow .when,
+.assistant-page .chat-rail .arow .spinner,
+.assistant-page .chat-rail .arow .btn.small {
+  flex: none;
+  justify-self: end;
+}
+
+.assistant-page .chat-rail-head,
+.assistant-page .chat-rail-head input,
+.assistant-page .chat-rail-group-wrap {
+  min-inline-size: 0;
+}
+
 .assistant-page .chat-rail-head {
   display: flex;
   flex-direction: column;

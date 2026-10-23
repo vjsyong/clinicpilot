@@ -400,11 +400,11 @@ jobs:
 
   publish:
     name: publish
+    # Dependency gating already skips publish when container or quality did
+    # not succeed; avoid fragile needs.* expressions here.
     if: >-
       github.event_name == 'push' &&
-      github.ref == 'refs/heads/main' &&
-      needs.quality.result == 'success' &&
-      needs.container.result == 'success'
+      github.ref == 'refs/heads/main'
     needs: [quality, container]
     runs-on: ubuntu-24.04
     timeout-minutes: 30

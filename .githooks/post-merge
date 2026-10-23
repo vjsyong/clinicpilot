@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Git post-merge hook: after a merge into the main branch, purge any worktree
+# whose branch is now fully merged (remove the worktree + delete the branch).
+#
+# Best-effort: the purge script never fails the merge.
+#
+# Installed via `git config core.hooksPath .githooks` (see CONTRIBUTING.md).
+
+set -uo pipefail
+
+hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"$hook_dir/purge-merged-worktrees.sh" || true
+exit 0

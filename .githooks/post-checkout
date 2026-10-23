@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Git post-checkout hook: keep CodeGraph initialized in new branches + worktrees.
+#
+# Fires on every branch checkout/creation (`git switch`, `git switch -c`,
+# `git worktree add`), when $3 (the flag) is 1. A new worktree is a separate
+# CodeGraph project with no index of its own, and a fresh branch in a checkout
+# that has never been indexed would otherwise be left without one. This hook
+# builds the index when it is missing and skips when it already exists, so the
+# common case (a branch switch in an already-indexed checkout) is a fast no-op.
+#
+# Best-effort: it never blocks the checkout on a failure.
+#
+# Installed via `git config core.hooksPath .githooks` (see CONTRIBUTING.md).
+
+set -uo pipefail
+
+# $3 is the checkout flag: 1 = branch checkout, 0 = file checkout.
+[ "${3:-0}" = "1" ] || exit 0
+
+command -v codegraph >/dev/null 2>&1 || exit 0
+
+root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+[ -n "$root" ] || exit 0
+
+# Already indexed: nothing to do. This is the fast path for ordinary branch
+# switches in a checkout that already has an index.
+[ -f "$root/.codegraph/codegraph.db" ] && exit 0
+
+hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"$hook_dir/codegraph-init-worktree.sh" "$root" || true
+exit 0

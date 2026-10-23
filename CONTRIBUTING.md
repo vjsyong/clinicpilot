@@ -29,6 +29,13 @@ docker compose -f compose.yaml up --build -d
 
 - `main` is the deployable branch. Feature work: one branch and one worktree
   per change; merge only after the local gate is green.
+- Worktrees are self-managing via tracked hooks. Enable them once per clone:
+  `git config core.hooksPath .githooks`. Creating a worktree
+  (`git worktree add ../clinicpilot-wt/clinicpilot-<name> -b <name>`) builds its
+  CodeGraph index; merging the branch into `main` in the main checkout removes
+  the worktree and deletes the branch automatically. A worktree with real
+  uncommitted changes is kept. Manual cleanup remains available via
+  `git worktree remove` + `git branch -d`.
 - Run `bash scripts/check.sh` before opening a PR. CI runs the same gates plus
   the container smoke test and the aggregate `quality` status.
 - Never commit `.env`, databases, model caches, generated patient data, or

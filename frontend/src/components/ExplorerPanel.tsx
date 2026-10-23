@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
 import type {
@@ -75,6 +75,7 @@ export function ExplorerPanel({ onOpenConversation, onReset }: ExplorerPanelProp
   const [refreshKey, setRefreshKey] = useState(0);
   const [eventType, setEventType] = useState("all");
   const [resetting, setResetting] = useState(false);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -256,49 +257,65 @@ export function ExplorerPanel({ onOpenConversation, onReset }: ExplorerPanelProp
                 const conversationTitle = event.conversation_id
                   ? titles.get(event.conversation_id)
                   : null;
+                const isExpanded = expandedId === event.id;
                 return (
-                  <tr key={event.id} data-testid="audit-event">
-                    <td>{timeLabel(event.created_at)}</td>
-                    <td>
-                      <span className="mono">{event.event_type}</span>
-                    </td>
-                    <td>{event.name}</td>
-                    <td>
-                      <span className={eventTone(event.status)}>{event.status}</span>
-                    </td>
-                    <td>
-                      {event.conversation_id && conversationTitle ? (
+                  <Fragment key={event.id}>
+                    <tr data-testid="audit-event">
+                      <td>{timeLabel(event.created_at)}</td>
+                      <td>
+                        <span className="mono">{event.event_type}</span>
+                      </td>
+                      <td>{event.name}</td>
+                      <td>
+                        <span className={eventTone(event.status)}>{event.status}</span>
+                      </td>
+                      <td>
+                        {event.conversation_id && conversationTitle ? (
+                          <button
+                            type="button"
+                            className="copy"
+                            onClick={() => {
+                              onOpenConversation(event.conversation_id ?? "");
+                            }}
+                          >
+                            {conversationTitle}
+                          </button>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td>
+                        {String(
+                          event.payload.response_model ??
+                            event.payload.model ??
+                            "—",
+                        )}
+                      </td>
+                      <td>{usage ? Number(usage.total_tokens ?? 0).toLocaleString() : "—"}</td>
+                      <td>{audit ? money(costOf(event, audit.pricing)) : "—"}</td>
+                      <td>
                         <button
                           type="button"
-                          className="copy"
+                          className="btn small"
+                          aria-expanded={isExpanded}
                           onClick={() => {
-                            onOpenConversation(event.conversation_id ?? "");
+                            setExpandedId(isExpanded ? null : event.id);
                           }}
                         >
-                          {conversationTitle}
+                          Payload {isExpanded ? "▾" : "▸"}
                         </button>
-                      ) : (
-                        "—"
-                      )}
-                    </td>
-                    <td>
-                      {String(
-                        event.payload.response_model ??
-                          event.payload.model ??
-                          "—",
-                      )}
-                    </td>
-                    <td>{usage ? Number(usage.total_tokens ?? 0).toLocaleString() : "—"}</td>
-                    <td>{audit ? money(costOf(event, audit.pricing)) : "—"}</td>
-                    <td>
-                      <details className="tools">
-                        <summary>Payload</summary>
-                        <pre className="explorer-json">
-                          {JSON.stringify(event.payload, null, 2)}
-                        </pre>
-                      </details>
-                    </td>
-                  </tr>
+                      </td>
+                    </tr>
+                    {isExpanded ? (
+                      <tr className="explorer-payload-row">
+                        <td colSpan={9}>
+                          <pre className="explorer-json">
+                            {JSON.stringify(event.payload, null, 2)}
+                          </pre>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
                 );
               })}
             </tbody>

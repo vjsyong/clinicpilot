@@ -267,11 +267,16 @@ button.nav-item {
   white-space: nowrap;
 }
 
+.explorer-payload-row > td {
+  padding: 0;
+  border-top: 0;
+}
+
 .explorer-json {
   max-block-size: 320px;
-  max-inline-size: 640px;
+  max-inline-size: none;
   overflow: auto;
-  margin: var(--space-6) 0 0;
+  margin: 0;
   padding: var(--space-8);
   background: var(--surface-subtle);
   color: var(--text-primary);

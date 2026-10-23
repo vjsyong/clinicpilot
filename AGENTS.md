@@ -26,6 +26,21 @@ cd frontend && npm ci && npm run lint && npm run typecheck && npm run build
 bash scripts/check.sh
 ```
 
+## Worktrees and CodeGraph
+
+The main checkout stays on `main`; one feature = one branch + one worktree
+beside it (`git worktree add ../clinicpilot-wt/clinicpilot-<name> -b <name>`).
+Tracked hooks keep worktrees self-managing:
+
+- `.githooks/post-checkout` builds the worktree's own CodeGraph index when it is
+  created (each worktree is a separate CodeGraph project). Enable once per
+  clone: `git config core.hooksPath .githooks`.
+- `.githooks/post-merge` removes any worktree whose branch is fully merged into
+  `main` and deletes that branch. A worktree with real uncommitted changes is
+  kept. Merging in the main checkout is what triggers the purge.
+- By hand: `.githooks/codegraph-init-worktree.sh [--force] [path|--all]` and
+  `.githooks/purge-merged-worktrees.sh`. `.codegraph/` is gitignored.
+
 ## Rules that bite
 
 - All browser routes live under `DEMO_PATH_PREFIX`; wrong-prefix requests are

@@ -12,6 +12,7 @@ from starlette.responses import JSONResponse, RedirectResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.clock import SystemClock
+from app.services.provider_settings import ProviderSettings
 from app.settings import Settings, get_settings
 
 logger = logging.getLogger("clinicpilot")
@@ -134,10 +135,16 @@ def create_app(
         index = build_index(settings, session_factory)
         await index.prewarm()
         app.state.knowledge_index = index
+        # The optional DeepSeek key is deliberately process-local: it is never
+        # written to SQLite, the environment, or logs.
+        app.state.provider_settings = ProviderSettings()
         controller_kwargs: dict[str, Any] = {}
         try:
-            if "index" in inspect.signature(build_controller_fn).parameters:
+            parameters = inspect.signature(build_controller_fn).parameters
+            if "index" in parameters:
                 controller_kwargs["index"] = index
+            if "provider_settings" in parameters:
+                controller_kwargs["provider_settings"] = app.state.provider_settings
         except (TypeError, ValueError):
             pass
         app.state.controller = build_controller_fn(
@@ -151,6 +158,11 @@ def create_app(
             runs = getattr(app.state, "chat_runs", None)
             if runs is not None:
                 await runs.shutdown()
+            controller = getattr(app.state, "controller", None)
+            model_client = getattr(controller, "_model_client", None)
+            aclose = getattr(model_client, "aclose", None)
+            if aclose is not None:
+                await aclose()
             engine.dispose()
 
     app = FastAPI(

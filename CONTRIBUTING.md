@@ -2,9 +2,10 @@
 
 ## Local setup
 
-1. Copy `.env.example` to `.env` and fill in `DEEPSEEK_API_KEY`.
-   Development defaults use prefix `/demo/` and dev password
-   `clinicpilot-demo`.
+1. Copy `.env.example` to `.env` and set `LOCAL_MODEL_BASE_URL` to the
+   reachable Gemma endpoint. Development defaults use prefix `/demo/` and dev
+   password `clinicpilot-demo`. DeepSeek is an optional backup configured in
+   the workbench UI.
 2. Backend:
    ```bash
    uv sync --project backend --locked --group dev

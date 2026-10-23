@@ -10,7 +10,7 @@ from fastapi import Header, Request
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.auth.sessions import SESSION_COOKIE, SessionService
-from app.contracts import PATIENT_ID, Clock
+from app.contracts import PATIENT_ID, Clock, ModelProvider
 from app.db.models import DemoSession
 from app.services.errors import ServiceError
 from app.settings import Settings
@@ -84,3 +84,16 @@ def require_patient(patient_id: str | None) -> str:
             status_code=403,
         )
     return PATIENT_ID
+
+
+def require_model_available(request: Request, model: ModelProvider) -> ModelProvider:
+    if model == "local":
+        return model
+    providers = getattr(request.app.state, "provider_settings", None)
+    if providers is None or not providers.configured():
+        raise ServiceError(
+            "DeepSeek is not configured. Add an API key or use the local model.",
+            code="provider_not_configured",
+            status_code=400,
+        )
+    return model

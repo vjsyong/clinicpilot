@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from app.agent.model_client import DeepSeekModelClient
+from app.agent.model_client import build_model_router
 from app.agent.prompts import build_system_prompt
 from app.agent.schemas import (
     CONFIRMATION_TOOL,
@@ -60,6 +60,7 @@ from app.contracts import (
     TurnResult,
 )
 from app.services.booking_views import booking_success_text, booking_view_from_draft
+from app.services.provider_settings import ProviderSettings
 from app.services.slots import guidance_text, next_step_for_draft
 from app.services.tool_summary import result_sources, tool_summary
 from app.settings import Settings
@@ -367,6 +368,7 @@ class AgentController:
                 messages=request,
                 tools=tool_definitions([CONFIRMATION_TOOL]),
                 tool_choice="auto",
+                model=ctx.model,
             )
             await self._audit_record(
                 ctx,
@@ -374,6 +376,7 @@ class AgentController:
                 "chat.completions.confirmation",
                 "ok",
                 {
+                    "provider": ctx.model,
                     "model": response.usage.model if response.usage else None,
                     "response_model": response.usage.response_model if response.usage else None,
                     "response_id": response.usage.response_id if response.usage else None,
@@ -705,13 +708,14 @@ class AgentController:
                 *_trim_messages(messages, self._settings.max_history_messages),
             ]
             started = time.perf_counter()
-            response = await self._model_round(request, definitions, emit)
+            response = await self._model_round(request, definitions, emit, ctx.model)
             await self._audit_record(
                 ctx,
                 "model_call",
                 "chat.completions",
                 "ok",
                 {
+                    "provider": ctx.model,
                     "model": response.usage.model if response.usage else None,
                     "response_model": response.usage.response_model if response.usage else None,
                     "response_id": response.usage.response_id if response.usage else None,
@@ -973,6 +977,7 @@ class AgentController:
         request: list[dict[str, Any]],
         definitions: list[dict[str, Any]],
         emit: EventEmitter | None,
+        model: str,
     ) -> ModelResponse:
         stream = getattr(self._model_client, "stream_complete", None)
         if emit is None or stream is None:
@@ -980,6 +985,7 @@ class AgentController:
                 messages=request,
                 tools=definitions,
                 tool_choice="auto",
+                model=model,
             )
 
         content: list[str] = []
@@ -989,6 +995,7 @@ class AgentController:
             messages=request,
             tools=definitions,
             tool_choice="auto",
+            model=model,
         ):
             kind = event.get("type")
             if kind == "content":
@@ -1286,6 +1293,7 @@ def build_controller(
     session_factory: Any,
     clock: Clock | None = None,
     index: KnowledgeIndex | None = None,
+    provider_settings: ProviderSettings | None = None,
 ) -> AgentController:
     """Wire the production controller.
 
@@ -1306,6 +1314,7 @@ def build_controller(
 
     active_clock = clock or SystemClock()
     knowledge_index = index or build_knowledge_index(settings, session_factory)
+    active_providers = provider_settings or ProviderSettings()
 
     def patient_context_loader(_patient_id: str) -> Any:
         return load_patient_context(session_factory)
@@ -1316,7 +1325,7 @@ def build_controller(
     return AgentController(
         settings=settings,
         clock=active_clock,
-        model_client=DeepSeekModelClient(settings),
+        model_client=build_model_router(settings, active_providers),
         index=knowledge_index,
         drafts=DraftService(session_factory, active_clock, settings),
         conversations=ConversationService(session_factory, active_clock),

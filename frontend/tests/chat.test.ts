@@ -31,6 +31,7 @@ describe("chat request helpers", () => {
       message_id: "fixed-message-id",
       message: "Hello",
       patient_id: "P001",
+      model: "local",
     });
   });
 
@@ -46,7 +47,14 @@ describe("chat request helpers", () => {
       message_id: "retry-me",
       message: "Book me in",
       patient_id: "P001",
+      model: "local",
     });
+  });
+
+  it("forwards an explicitly selected provider", () => {
+    const message = createPendingMessage("Next question", () => "second-message");
+
+    expect(buildChatRequest("conversation-1", message, "deepseek").model).toBe("deepseek");
   });
 
   it("keeps the conversation id returned by the first response", () => {

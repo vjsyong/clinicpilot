@@ -3,6 +3,7 @@ import type {
   ChatEvent,
   ChatRequest,
   ConversationTranscript,
+  ModelProvider,
   NextStep,
   SlotSuggestion,
   SourceRef,
@@ -103,12 +104,14 @@ export function toRetry(message: FailedMessage): PendingMessage {
 export function buildChatRequest(
   conversationId: string | null,
   message: PendingMessage,
+  model: ModelProvider = "local",
 ): ChatRequest {
   return {
     conversation_id: conversationId,
     message_id: message.messageId,
     message: message.text,
     patient_id: PATIENT_ID,
+    model,
   };
 }
 

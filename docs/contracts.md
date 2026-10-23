@@ -71,12 +71,15 @@ All paths are relative to the prefix.
 Request (Pydantic `app.contracts.ChatRequest`):
 
 ```json
-{"conversation_id": null, "message_id": "uuid", "message": "hello", "patient_id": "P001"}
+{"conversation_id": null, "message_id": "uuid", "message": "hello", "patient_id": "P001", "model": "local"}
 ```
 
 - `message_id` is required (1-200 chars). Message length is capped by
   `settings.max_message_chars` (default 4000).
 - `patient_id` may be omitted; any value other than `P001` returns `403`.
+- `model` is `local` (default) or `deepseek`. Selecting an unconfigured
+  DeepSeek provider returns `400 provider_not_configured` before a turn starts.
+  Model selection is not part of the idempotency hash.
 - A conversation belonging to another demo session returns `404`.
 - Duplicate `(conversation_id, message_id)` with the same canonical request
   hash returns the stored `ChatResponse` (`200`).
@@ -119,10 +122,23 @@ ID can be retried.
 
 ### `POST /api/chat/regenerate`
 
-Body: `{"conversation_id": "...", "message_id": "<last user message id>"}`.
+Body: `{"conversation_id": "...", "message_id": "<last user message id>", "model": "local"}`.
 Trims the last assistant reply, starts a fresh turn for the same user text, and
 returns the same SSE event stream. Confirmation turns and turns that already
 persist a booking are refused with `409`.
+
+### Model providers
+
+- `GET /api/models` returns the available providers and their labels. The local
+  Gemma provider is always available; DeepSeek reports `available: false` until
+  a key is saved.
+- `PUT /api/models/deepseek-key` accepts `{"api_key": "..."}` and stores the key
+  in process memory only. It returns a masked hint and `verified` (whether a
+  best-effort `/models` probe succeeded). The raw key is never returned or
+  logged.
+- `DELETE /api/models/deepseek-key` clears the key. A restart also clears it.
+- Provider base URLs and model ids come from runtime configuration, never from
+  the browser.
 
 ### Booking actions
 
@@ -182,7 +198,7 @@ Request: `{"draft_id": "...", "draft_version": 2}`. Header:
 
 - `GET /healthz` liveness: no dependency checks.
 - `GET /readyz` readiness: database `SELECT 1` and retrieval resources loaded.
-  Does not call DeepSeek.
+  Does not call a generation provider.
 - Both require a loopback `Host` header. The Cloudflare route publishes only the
   prefix, and any public-host request for a health path returns `404`.
 
@@ -196,7 +212,8 @@ Request: `{"draft_id": "...", "draft_version": 2}`. Header:
 Known codes: `unauthorized`, `forbidden`, `not_found`, `message_id_conflict`,
 `turn_in_progress`, `draft_incomplete`, `draft_version_conflict`,
 `confirmation_required`, `invalid_booking_details`, `idempotency_conflict`,
-`provider_error`, `rate_limited`, `internal_error`. Never expose stack traces,
+`provider_error`, `provider_not_configured`, `rate_limited`, `internal_error`.
+Never expose stack traces,
 credentials, or raw provider responses.
 
 ## Database

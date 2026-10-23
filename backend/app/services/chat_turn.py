@@ -7,7 +7,14 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from app.contracts import PATIENT_ID, ChatResponse, ProviderError, TurnContext
+from app.contracts import (
+    PATIENT_ID,
+    ChatResponse,
+    ModelProvider,
+    ProviderError,
+    ProviderNotConfiguredError,
+    TurnContext,
+)
 from app.services.conversations import ConversationService
 from app.services.errors import ServiceError
 
@@ -24,6 +31,7 @@ async def execute_turn(
     demo_session_id: str,
     user_text: str,
     now: datetime,
+    model: ModelProvider = "local",
     emit: Any = None,
 ) -> ChatResponse:
     """Run one turn, persist its response, and fail the turn on any error."""
@@ -36,6 +44,7 @@ async def execute_turn(
                 patient_id=PATIENT_ID,
                 user_text=user_text,
                 now=now,
+                model=model,
             ),
             emit=emit,
         )
@@ -53,7 +62,7 @@ async def execute_turn(
     except asyncio.CancelledError:
         await conversations.fail_turn(turn_id)
         raise
-    except ProviderError:
+    except (ProviderError, ProviderNotConfiguredError):
         await conversations.fail_turn(turn_id)
         raise
     except ServiceError:

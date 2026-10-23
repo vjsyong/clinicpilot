@@ -142,3 +142,39 @@ def test_unexpected_error_maps_to_internal_error(harness: AppHarness, login) -> 
     error = response.json()["error"]
     assert error["code"] == "internal_error"
     assert "secret internals" not in response.text
+
+
+def test_chat_defaults_to_the_local_model(harness: AppHarness, login) -> None:
+    assert login(harness.client).status_code == 303
+    response = _send(harness.client)
+    assert response.status_code == 200
+    assert harness.controller.calls[-1].model == "local"
+
+
+def test_chat_rejects_deepseek_without_a_key(harness: AppHarness, login) -> None:
+    assert login(harness.client).status_code == 303
+    response = _send(harness.client, model="deepseek")
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "provider_not_configured"
+    assert harness.controller.calls == []
+
+
+def test_chat_forwards_the_selected_provider(harness: AppHarness, login) -> None:
+    assert login(harness.client).status_code == 303
+    harness.app.state.provider_settings.set_key("sk-test-key")
+    response = _send(harness.client, model="deepseek")
+    assert response.status_code == 200
+    assert harness.controller.calls[-1].model == "deepseek"
+
+
+def test_replay_does_not_require_the_selected_provider(harness: AppHarness, login) -> None:
+    assert login(harness.client).status_code == 303
+    first = _send(harness.client)
+    assert first.status_code == 200
+    replay = _send(
+        harness.client,
+        conversation_id=first.json()["conversation_id"],
+        model="deepseek",
+    )
+    assert replay.status_code == 200
+    assert replay.json() == first.json()

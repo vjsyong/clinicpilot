@@ -2,7 +2,7 @@
 
 A clinic assistant that answers questions from supplied records and helps a
 patient book an appointment through chat. Built with **FastAPI, React, SQLite,
-DeepSeek, and local RAG**.
+a local Gemma model with an optional manual DeepSeek backup, and local RAG**.
 
 The main design choice is simple: **the model handles the conversation; the
 application controls what gets saved.** Booking details, confirmation, duplicate
@@ -23,7 +23,7 @@ evidence an assessor can inspect.
 | --- | --- | --- |
 | Clinic, doctor, and treatment RAG | Hybrid retrieval using exact matches, BM25, embeddings, and reranking | `backend/app/retrieval/`, `backend/app/agent/controller.py` |
 | Patient context for the single-patient demo | Server-fixed patient `P001`; profile and treatment history are loaded separately from clinic knowledge | `backend/app/contracts.py`, `backend/app/retrieval/patient_context.py` |
-| Intent analysis and multi-turn conversation | DeepSeek tool-calling controller with persisted conversation and booking-draft state | `backend/app/agent/controller.py`, `backend/app/services/conversations.py` |
+| Intent analysis and multi-turn conversation | Local-model tool-calling controller (optional DeepSeek backup) with persisted conversation and booking-draft state | `backend/app/agent/controller.py`, `backend/app/services/conversations.py` |
 | Existing booking lookup | Agent tool calls the internal booking REST API | `backend/app/agent/tools.py`, `backend/app/api/bookings.py` |
 | Missing booking parameters | Versioned draft collects doctor, treatment, local date/time, and optional notes | `backend/app/services/drafts.py`, `backend/app/agent/controller.py` |
 | Booking persistence | Internal `POST /api/bookings` validates and saves the authorized draft to SQLite | `backend/app/api/bookings.py`, `backend/app/services/bookings.py` |
@@ -58,7 +58,7 @@ cost. **Reset demo** restores seed bookings and clears chats/drafts for all demo
 sessions; audit events remain.
 
 Standard automated tests use injected model responses; packaged browser tests
-use a controlled model stub. The live demo requires `DEEPSEEK_API_KEY`.
+use a controlled model stub. The live demo needs a reachable local model; a DeepSeek key is an optional backup entered in the UI.
 
 ### API Surface
 
@@ -90,7 +90,7 @@ loads the canonical details, validates them, and applies an idempotency key.
 | --- | --- | --- |
 | Backend | Python 3.12, FastAPI, Pydantic | HTTP API, request validation, and application rules |
 | Data | SQLite, SQLAlchemy 2, Alembic | Patient records, conversations, drafts, bookings, and migrations |
-| Language model | DeepSeek through the OpenAI Python SDK | Conversation and requests to eight defined tools |
+| Language model | Local Gemma through the OpenAI Python SDK; optional DeepSeek backup | Conversation and requests to eight defined tools |
 | Search | FastEmbed/ONNX, Qwen3 embeddings, Jina reranker, NumPy, BM25 | CPU semantic, keyword, and exact-name retrieval with reranking |
 | Frontend | React, TypeScript, Vite, Triage design system | Chat, booking controls, source inspection, and execution traces |
 | Delivery | Docker Compose, GitHub Actions, GHCR | Build, test, publish, and deploy the tested image |
@@ -107,12 +107,13 @@ retrieval pipeline, booking state machine, and database schema.
 
 ### Docker Compose
 
-You need Docker with Compose and a DeepSeek API key. The first build downloads
-the embedding and reranker models; both run locally on CPU.
+You need Docker with Compose and a reachable OpenAI-compatible Gemma endpoint.
+The first build downloads the embedding and reranker models; both run locally
+on CPU.
 
 ```bash
 cp .env.example .env
-# Set DEEPSEEK_API_KEY in .env.
+# Point LOCAL_MODEL_BASE_URL at the Gemma endpoint.
 docker compose -f compose.yaml -f compose.local.yaml up --build
 ```
 
@@ -122,12 +123,12 @@ and repeatable CSV seeding run automatically on container startup.
 
 ### Native Development
 
-You need Python 3.12, `uv`, Node.js 24 (used in CI), and a DeepSeek API key.
-Run these commands from the repository root:
+You need Python 3.12, `uv`, Node.js 24 (used in CI), and a reachable
+OpenAI-compatible Gemma endpoint. Run these commands from the repository root:
 
 ```bash
 cp .env.example .env
-# Set DEEPSEEK_API_KEY in .env.
+# Point LOCAL_MODEL_BASE_URL at the Gemma endpoint.
 uv sync --project backend --locked --group dev
 uv run --project backend alembic -c backend/alembic.ini upgrade head
 (cd backend && uv run python -m app.db.seed)
@@ -146,7 +147,10 @@ hot reload, run `npm run dev` from `frontend/` in another terminal and open
 
 | Setting | Purpose |
 | --- | --- |
-| `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL` | Model access; the configured default model is `deepseek-flash` |
+| `DEFAULT_MODEL` | `local` (default) or `deepseek` |
+| `LOCAL_MODEL_BASE_URL`, `LOCAL_MODEL_ID` | Primary OpenAI-compatible Gemma endpoint and model id |
+| `LOCAL_MODEL_*` | Local timeout, temperature, top-p/top-k, and output cap |
+| `DEEPSEEK_MODEL`, `DEEPSEEK_BASE_URL` | Optional backup endpoint; the key is entered in the UI |
 | `DEMO_PATH_PREFIX` | Browser path, `/demo/` locally; supplied at runtime |
 | `DEMO_PASSWORD_HASH` | Argon2id hash for the shared login password |
 | `INTERNAL_TOOL_KEY` | Credential for server-to-server booking calls |
@@ -156,6 +160,12 @@ hot reload, run `npm run dev` from `frontend/` in another terminal and open
 | `RERANKER_MODEL`, `RERANKER_REVISION`, `RERANKER_ENABLED` | Local reranker and enable/disable setting |
 | `MODEL_*_PRICE_PER_MILLION_USD` | Configurable rates for cost estimates, not billing records |
 | `CLOUDFLARE_TUNNEL_TOKEN` | Tunnel credential for public deployment |
+
+The chat window has a model picker. The local Gemma model is selected by
+default. To use DeepSeek as a backup, choose **Key**, paste the key, and save.
+The key is held in process memory only: it is never written to the database or
+environment, is never returned to the browser, and is cleared when the app
+restarts. If the local server fails, switch the picker to DeepSeek and retry.
 
 Seeding updates source records by ID without overwriting user-created bookings.
 Container restarts keep the SQLite database in the named `data` volume. Native
@@ -194,8 +204,9 @@ Check its model and revision before applying results to the current configuratio
 
 ## Hosted Deployment
 
-Production uses Cloudflare Tunnel, a runtime path prefix, and a shared password.
-CI publishes the tested image to GHCR; deployment promotes that image by digest
+Production uses Cloudflare Tunnel, a runtime path prefix, a shared password, and
+a reachable local-model endpoint. A DeepSeek key is optional and is entered in
+the workbench rather than `.env`. CI publishes the tested image to GHCR; deployment promotes that image by digest
 over Tailscale + SSH. A failed deployment restores the previous image while
 retaining the database volume.
 

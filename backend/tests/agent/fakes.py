@@ -61,12 +61,14 @@ class FakeModelClient:
         messages: Sequence[dict[str, Any]],
         tools: Sequence[dict[str, Any]],
         tool_choice: str | dict[str, Any] = "auto",
+        model: str = "local",
     ) -> ModelResponse:
         self.calls.append(
             {
                 "messages": copy.deepcopy(list(messages)),
                 "tools": copy.deepcopy(list(tools)),
                 "tool_choice": copy.deepcopy(tool_choice),
+                "model": model,
             }
         )
         if not self.responses:

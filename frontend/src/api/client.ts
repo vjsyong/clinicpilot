@@ -11,6 +11,8 @@ import type {
   KnowledgeRecord,
   KnowledgeStatus,
   AuditEnvelope,
+  ModelsResponse,
+  ModelProvider,
   ResetResult,
 } from "./types";
 
@@ -21,6 +23,8 @@ export const API_PATHS = {
   knowledge: "./api/knowledge",
   bookings: "./api/bookings",
   demoReset: "./api/demo/reset",
+  models: "./api/models",
+  deepseekKey: "./api/models/deepseek-key",
   login: "./login",
   logout: "./logout",
 } as const;
@@ -282,8 +286,30 @@ export function createApiClient(options: ApiClientOptions = {}) {
       await readSse(response, onEvent);
     },
 
+    async listModels(): Promise<ModelsResponse> {
+      return requestJson<ModelsResponse>(API_PATHS.models, { method: "GET" });
+    },
+
+    async setDeepSeekKey(apiKey: string): Promise<ModelsResponse> {
+      return requestJson<ModelsResponse>(API_PATHS.deepseekKey, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ api_key: apiKey }),
+      });
+    },
+
+    async clearDeepSeekKey(): Promise<ModelsResponse> {
+      return requestJson<ModelsResponse>(API_PATHS.deepseekKey, {
+        method: "DELETE",
+      });
+    },
+
     async regenerateChat(
-      payload: { conversation_id: string; message_id: string },
+      payload: {
+        conversation_id: string;
+        message_id: string;
+        model: ModelProvider;
+      },
       onEvent: (event: ChatStreamEvent) => void,
       signal?: AbortSignal,
     ): Promise<void> {

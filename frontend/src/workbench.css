@@ -139,6 +139,18 @@ button.nav-item {
   display: none;
 }
 
+.assistant-page .model-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin-bottom: var(--space-8);
+}
+
+.assistant-page .model-bar select {
+  inline-size: auto;
+  max-inline-size: 100%;
+}
+
 .assistant-page .composer textarea {
   field-sizing: content;
 }

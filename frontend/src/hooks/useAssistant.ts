@@ -5,6 +5,8 @@ import type {
   BookingDraftView,
   ChatStreamEvent,
   ConversationSummary,
+  ModelInfo,
+  ModelProvider,
   SlotSuggestion,
   SourceRef,
   ToolTrace,
@@ -24,6 +26,32 @@ import {
 import { conversationTitle } from "../lib/sessions";
 
 const STORAGE_KEY = "clinicpilot.conversation";
+const MODEL_STORAGE_KEY = "clinicpilot.model";
+
+function readStoredModel(): ModelProvider {
+  try {
+    const stored = localStorage.getItem(MODEL_STORAGE_KEY);
+    return stored === "deepseek" ? "deepseek" : "local";
+  } catch {
+    return "local";
+  }
+}
+
+function hasStoredModel(): boolean {
+  try {
+    return localStorage.getItem(MODEL_STORAGE_KEY) !== null;
+  } catch {
+    return false;
+  }
+}
+
+function storeModel(model: ModelProvider): void {
+  try {
+    localStorage.setItem(MODEL_STORAGE_KEY, model);
+  } catch {
+    // Storage is optional; the in-memory selection still works.
+  }
+}
 
 function storeConversation(id: string | null): void {
   try {
@@ -125,8 +153,12 @@ export function useAssistant({ onBookingCreated }: UseAssistantOptions) {
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [model, setModel] = useState<ModelProvider>(readStoredModel);
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [modelNotice, setModelNotice] = useState<string | null>(null);
 
   const conversationIdRef = useRef<string | null>(null);
+  const modelRef = useRef<ModelProvider>(model);
   const inFlightRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
   const liveMessageIdRef = useRef<string | null>(null);
@@ -148,6 +180,77 @@ export function useAssistant({ onBookingCreated }: UseAssistantOptions) {
   useEffect(() => {
     bookingCallbackRef.current = onBookingCreated;
   }, [onBookingCreated]);
+
+  useEffect(() => {
+    modelRef.current = model;
+  }, [model]);
+
+  const applyModels = useCallback((listed: ModelInfo[]) => {
+    setModels(listed);
+    const selected = listed.find((item) => item.id === modelRef.current);
+    if (modelRef.current === "deepseek" && selected?.available !== true) {
+      modelRef.current = "local";
+      setModel("local");
+      storeModel("local");
+      setModelNotice("DeepSeek is not configured. Switched to the local model.");
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const listed = await api.listModels();
+        if (!cancelled) {
+          if (!hasStoredModel()) {
+            const preferred = listed.models.find((item) => item.id === listed.default);
+            if (preferred?.available) {
+              modelRef.current = preferred.id;
+              setModel(preferred.id);
+              storeModel(preferred.id);
+            }
+          }
+          applyModels(listed.models);
+        }
+      } catch (caught) {
+        if (!cancelled) {
+          setModelNotice(errorMessage(caught));
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [applyModels]);
+
+  const chooseModel = useCallback(
+    (next: ModelProvider) => {
+      if (next === "deepseek" && !models.some((item) => item.id === "deepseek" && item.available)) {
+        return;
+      }
+      modelRef.current = next;
+      setModel(next);
+      storeModel(next);
+      setModelNotice(null);
+    },
+    [models],
+  );
+
+  const saveDeepSeekKey = useCallback(async (apiKey: string): Promise<boolean> => {
+    const result = await api.setDeepSeekKey(apiKey);
+    applyModels(result.models);
+    setModelNotice(null);
+    return result.verified === true;
+  }, [applyModels]);
+
+  const clearDeepSeekKey = useCallback(async () => {
+    const result = await api.clearDeepSeekKey();
+    applyModels(result.models);
+    modelRef.current = "local";
+    setModel("local");
+    storeModel("local");
+    setModelNotice("DeepSeek key cleared. Using the local model.");
+  }, [applyModels]);
 
   const setConversation = useCallback((id: string | null) => {
     conversationIdRef.current = id;
@@ -410,7 +513,7 @@ export function useAssistant({ onBookingCreated }: UseAssistantOptions) {
       abortRef.current = controller;
       try {
         await api.streamChat(
-          buildChatRequest(conversationIdRef.current, pending),
+          buildChatRequest(conversationIdRef.current, pending, model),
           (event) => {
             handleEvent(assistantId, event);
           },
@@ -462,7 +565,7 @@ export function useAssistant({ onBookingCreated }: UseAssistantOptions) {
         }
       }
     },
-    [finishStreaming, handleEvent, refreshSessions],
+    [finishStreaming, handleEvent, model, refreshSessions],
   );
 
   const loadConversation = useCallback(
@@ -582,7 +685,7 @@ export function useAssistant({ onBookingCreated }: UseAssistantOptions) {
       abortRef.current = controller;
       try {
         await api.regenerateChat(
-          { conversation_id: conversation, message_id: user.messageId },
+          { conversation_id: conversation, message_id: user.messageId, model },
           (event) => {
             handleEvent(assistantId, event);
           },
@@ -608,7 +711,7 @@ export function useAssistant({ onBookingCreated }: UseAssistantOptions) {
         }
       }
     },
-    [finishStreaming, handleEvent, loadConversation, messages],
+    [finishStreaming, handleEvent, loadConversation, messages, model],
   );
 
   useEffect(() => {
@@ -810,6 +913,12 @@ export function useAssistant({ onBookingCreated }: UseAssistantOptions) {
     activeTurnId,
     loading,
     historyError,
+    model,
+    models,
+    modelNotice,
+    chooseModel,
+    saveDeepSeekKey,
+    clearDeepSeekKey,
     setInput,
     send,
     sendText,

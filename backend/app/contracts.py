@@ -15,6 +15,7 @@ from typing import Any, Literal, Protocol
 from pydantic import BaseModel, Field
 
 PATIENT_ID = "P001"
+ModelProvider = Literal["local", "deepseek"]
 
 
 class DraftStatus(StrEnum):
@@ -129,6 +130,7 @@ class ChatRequest(BaseModel):
     message_id: str = Field(min_length=1, max_length=200)
     message: str = Field(min_length=1, max_length=4000)
     patient_id: str | None = PATIENT_ID
+    model: ModelProvider = "local"
 
 
 class ChatResponse(BaseModel):
@@ -194,6 +196,7 @@ class TurnContext(BaseModel):
     patient_id: str = PATIENT_ID
     user_text: str
     now: datetime
+    model: ModelProvider = "local"
 
 
 class TurnResult(BaseModel):
@@ -242,6 +245,10 @@ class ErrorResponse(BaseModel):
 
 class ProviderError(RuntimeError):
     """External generation provider failed; safe to surface as a retryable 502."""
+
+
+class ProviderNotConfiguredError(RuntimeError):
+    """The requested provider has no usable credentials; not retryable."""
 
 
 class Clock(Protocol):
@@ -315,6 +322,7 @@ class ModelClient(Protocol):
         messages: Sequence[dict[str, Any]],
         tools: Sequence[dict[str, Any]],
         tool_choice: str | dict[str, Any] = "auto",
+        model: str = "local",
     ) -> ModelResponse: ...
 
 

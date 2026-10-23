@@ -1,8 +1,9 @@
 # AGENTS.md — ClinicPilot
 
 ClinicPilot is a single-patient (P001) clinic assistant: a FastAPI + SQLite
-backend, a local-embedding retrieval layer, a DeepSeek tool-calling agent, and a
-React workbench, shipped as one container behind a Cloudflare tunnel.
+backend, a local-embedding retrieval layer, an OpenAI-compatible local-model
+tool-calling agent with an optional manual DeepSeek backup, and a React
+workbench, shipped as one container behind a Cloudflare tunnel.
 
 `docs/contracts.md` is the frozen cross-package contract. `implementation_plans/
 clinicpilot-mvp/plan.md` is the execution plan and acceptance matrix. Read the
@@ -62,7 +63,7 @@ Tracked hooks keep worktrees self-managing:
   authenticated browser session.
 - Do not hand-edit `vendor/triage/**`; it is a pinned copy with its license.
 - Tests use temporary SQLite databases and an injected clock. Standard tests
-  must not need a live DeepSeek key or GPU.
+  must not need a live model key or GPU.
 
 ## Work packages and ownership
 

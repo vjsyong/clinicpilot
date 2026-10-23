@@ -3,6 +3,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   BookingDraftView,
   ConversationSummary,
+  ModelInfo,
+  ModelProvider,
   SlotSuggestion,
   SourceRef,
 } from "../api/types";
@@ -12,6 +14,8 @@ import { ChatMessageView } from "./ChatMessage";
 import { ChatSessionRail } from "./ChatSessionRail";
 import { Composer } from "./Composer";
 import { MobileHistorySheet } from "./MobileHistorySheet";
+import { ModelPicker } from "./ModelPicker";
+import { ModelSettingsDialog } from "./ModelSettingsDialog";
 import { SourceInspector } from "./SourceInspector";
 
 interface ChatPanelProps {
@@ -25,6 +29,12 @@ interface ChatPanelProps {
   error: string | null;
   loading: boolean;
   historyError: string | null;
+  model: ModelProvider;
+  models: ModelInfo[];
+  modelNotice: string | null;
+  onModelChange: (model: ModelProvider) => void;
+  onSaveDeepSeekKey: (apiKey: string) => Promise<boolean>;
+  onClearDeepSeekKey: () => Promise<void>;
   onInputChange: (value: string) => void;
   onSend: () => void;
   onPrompt: (text: string) => void;
@@ -58,6 +68,12 @@ export function ChatPanel({
   error,
   loading,
   historyError,
+  model,
+  models,
+  modelNotice,
+  onModelChange,
+  onSaveDeepSeekKey,
+  onClearDeepSeekKey,
   onInputChange,
   onSend,
   onPrompt,
@@ -78,6 +94,9 @@ export function ChatPanel({
   const [historyOpen, setHistoryOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [source, setSource] = useState<SourceRef | null>(null);
+  const [modelSettingsOpen, setModelSettingsOpen] = useState(false);
+
+  const deepseek = models.find((item) => item.id === "deepseek");
 
   const scrollToBottom = useCallback(() => {
     const transcript = transcriptRef.current;
@@ -176,6 +195,17 @@ export function ChatPanel({
               +
             </button>
           </div>
+
+          <ModelPicker
+            model={model}
+            models={models}
+            disabled={inFlight || loading}
+            notice={modelNotice}
+            onChange={onModelChange}
+            onConfigure={() => {
+              setModelSettingsOpen(true);
+            }}
+          />
 
           <div className="chat-flex">
             <div className="jumpwrap">
@@ -342,6 +372,18 @@ export function ChatPanel({
           </button>
         </div>
       </MobileHistorySheet>
+
+      {modelSettingsOpen ? (
+        <ModelSettingsDialog
+          configured={deepseek?.available === true}
+          hint={deepseek?.hint ?? null}
+          onClose={() => {
+            setModelSettingsOpen(false);
+          }}
+          onSave={onSaveDeepSeekKey}
+          onClear={onClearDeepSeekKey}
+        />
+      ) : null}
 
       <SourceInspector
         source={source}

@@ -1,5 +1,7 @@
 export const PATIENT_ID = "P001";
 
+export type ModelProvider = "local" | "deepseek";
+
 export interface SourceRef {
   source_file: string;
   record_id: string;
@@ -88,6 +90,21 @@ export interface ChatRequest {
   message_id: string;
   message: string;
   patient_id: string;
+  model: ModelProvider;
+}
+
+export interface ModelInfo {
+  id: ModelProvider;
+  label: string;
+  model: string;
+  available: boolean;
+  hint?: string | null;
+}
+
+export interface ModelsResponse {
+  default: ModelProvider;
+  models: ModelInfo[];
+  verified?: boolean;
 }
 
 export interface ApiErrorEnvelope {

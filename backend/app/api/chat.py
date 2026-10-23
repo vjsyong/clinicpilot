@@ -8,7 +8,13 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.encoders import jsonable_encoder
 from starlette.responses import JSONResponse, Response
 
-from app.api.deps import get_clock, get_settings, require_api_session, require_patient
+from app.api.deps import (
+    get_clock,
+    get_settings,
+    require_api_session,
+    require_model_available,
+    require_patient,
+)
 from app.api.locks import conversation_lock
 from app.contracts import ChatRequest
 from app.db.models import DemoSession
@@ -59,6 +65,7 @@ async def chat(
             retryable=True,
         )
 
+    model = require_model_available(request, payload.model)
     assert started.turn_id is not None
     turn_id = started.turn_id
     lock = conversation_lock(request, conversation_id)
@@ -79,5 +86,6 @@ async def chat(
             demo_session_id=str(demo_session.id),
             user_text=payload.message,
             now=get_clock(request).now(),
+            model=model,
         )
         return JSONResponse(jsonable_encoder(response), status_code=200)

@@ -1,9 +1,14 @@
-"""DeepSeek chat-completion adapter implementing ``app.contracts.ModelClient``."""
+"""OpenAI-compatible chat-completion providers for ClinicPilot.
+
+The local Gemma endpoint is the primary provider. DeepSeek is an optional
+manual backup whose API key is supplied at runtime and kept in memory.
+"""
 
 from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -15,37 +20,62 @@ from openai import (
     OpenAIError,
 )
 
-from app.contracts import ModelResponse, ModelToolCall, ModelUsage, ProviderError
+from app.contracts import (
+    ModelResponse,
+    ModelToolCall,
+    ModelUsage,
+    ProviderError,
+    ProviderNotConfiguredError,
+)
+from app.services.provider_settings import ProviderSettings
 from app.settings import Settings
 
 logger = logging.getLogger("clinicpilot.agent.model")
 
-MAX_OUTPUT_TOKENS = 1024
 PROVIDER_SAFE_ERROR = "The assistant provider is temporarily unavailable. Please retry."
+_LOCAL_PROVIDER = "local"
+_DEEPSEEK_PROVIDER = "deepseek"
 _INTERNAL_KEY_PREFIX = "_cp_"
 _STANDARD_TOOL_CHOICES = frozenset({"auto", "none", "required"})
 
 
-class DeepSeekModelClient:
-    """Thin, bounded adapter around the OpenAI-compatible DeepSeek API."""
+@dataclass(frozen=True)
+class ProviderConfig:
+    name: str
+    model: str
+    base_url: str
+    timeout_seconds: float
+    temperature: float
+    max_tokens: int
+    top_p: float | None = None
+    top_k: int | None = None
+    disable_thinking: bool = False
+    requires_key: bool = False
+    extra_headers: dict[str, str] = field(default_factory=dict)
+
+
+class OpenAICompatibleModelClient:
+    """Thin, bounded adapter around one OpenAI-compatible chat endpoint."""
 
     def __init__(
         self,
-        settings: Settings,
+        config: ProviderConfig,
         *,
+        api_key: str = "unused",
         client: AsyncOpenAI | None = None,
     ) -> None:
-        self._settings = settings
+        self._config = config
         self._owns_client = client is None
-        # Production validation requires a real key. Development/test may start
-        # without one so the UI and readiness work; chat then fails with a clear
-        # ProviderError instead of preventing startup.
-        api_key = settings.deepseek_api_key or "missing-development-key"
         self._client = client or AsyncOpenAI(
-            base_url=settings.deepseek_base_url,
-            api_key=api_key,
-            timeout=settings.deepseek_timeout_seconds,
+            base_url=config.base_url,
+            api_key=api_key or "unused",
+            timeout=config.timeout_seconds,
+            default_headers=dict(config.extra_headers) or None,
         )
+
+    @property
+    def provider(self) -> str:
+        return self._config.name
 
     async def complete(
         self,
@@ -53,6 +83,7 @@ class DeepSeekModelClient:
         messages: Sequence[dict[str, Any]],
         tools: Sequence[dict[str, Any]],
         tool_choice: str | dict[str, Any] = "auto",
+        model: str | None = None,
     ) -> ModelResponse:
         sanitized = [_sanitize_message(message) for message in messages]
         definitions = _convert_tools(tools)
@@ -68,14 +99,16 @@ class DeepSeekModelClient:
                 last_error = exc
                 if attempt == 0 and _is_retryable(exc):
                     logger.warning(
-                        "DeepSeek request failed (%s); retrying once.",
+                        "%s request failed (%s); retrying once.",
+                        self._config.name,
                         type(exc).__name__,
                     )
                     continue
                 raise ProviderError(PROVIDER_SAFE_ERROR) from None
         # The loop either returns, raises, or retries exactly once.
         logger.warning(
-            "DeepSeek request failed after retry (%s).",
+            "%s request failed after retry (%s).",
+            self._config.name,
             type(last_error).__name__ if last_error is not None else "unknown",
         )
         raise ProviderError(PROVIDER_SAFE_ERROR)
@@ -86,6 +119,7 @@ class DeepSeekModelClient:
         messages: Sequence[dict[str, Any]],
         tools: Sequence[dict[str, Any]],
         tool_choice: str | dict[str, Any] = "auto",
+        model: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Yield content and completed tool calls as they arrive.
 
@@ -148,7 +182,8 @@ class DeepSeekModelClient:
             raise
         except Exception as exc:
             logger.warning(
-                "DeepSeek stream failed (%s).",
+                "%s stream failed (%s).",
+                self._config.name,
                 type(exc).__name__,
             )
             raise ProviderError(PROVIDER_SAFE_ERROR) from None
@@ -187,13 +222,22 @@ class DeepSeekModelClient:
         tools: list[dict[str, Any]],
         tool_choice: str | dict[str, Any],
     ) -> dict[str, Any]:
+        extra_body: dict[str, Any] = {}
+        if self._config.disable_thinking:
+            extra_body["thinking"] = {"type": "disabled"}
+        if self._config.top_k is not None:
+            extra_body["top_k"] = self._config.top_k
+
         request: dict[str, Any] = {
-            "model": self._settings.deepseek_model,
+            "model": self._config.model,
             "messages": messages,
-            "temperature": 0,
-            "max_tokens": MAX_OUTPUT_TOKENS,
-            "extra_body": {"thinking": {"type": "disabled"}},
+            "temperature": self._config.temperature,
+            "max_tokens": self._config.max_tokens,
         }
+        if self._config.top_p is not None:
+            request["top_p"] = self._config.top_p
+        if extra_body:
+            request["extra_body"] = extra_body
         if tools:
             request["tools"] = tools
             request["tool_choice"] = tool_choice
@@ -231,6 +275,124 @@ class DeepSeekModelClient:
                 getattr(response.choices[0], "finish_reason", None),
             ),
         )
+
+
+class ModelRouter:
+    """Dispatch a turn to the selected provider without leaking credentials."""
+
+    def __init__(
+        self,
+        *,
+        local_config: ProviderConfig,
+        deepseek_config: ProviderConfig,
+        provider_settings: ProviderSettings,
+    ) -> None:
+        self._local_config = local_config
+        self._deepseek_config = deepseek_config
+        self._provider_settings = provider_settings
+        self._local = OpenAICompatibleModelClient(local_config)
+        self._deepseek: OpenAICompatibleModelClient | None = None
+        self._deepseek_key = ""
+        # A key change while another turn is streaming must not close a client
+        # that is still in use. Retired clients are closed at shutdown.
+        self._retired: list[OpenAICompatibleModelClient] = []
+
+    async def complete(
+        self,
+        *,
+        messages: Sequence[dict[str, Any]],
+        tools: Sequence[dict[str, Any]],
+        tool_choice: str | dict[str, Any] = "auto",
+        model: str = _LOCAL_PROVIDER,
+    ) -> ModelResponse:
+        client = await self._resolve(model)
+        return await client.complete(
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+        )
+
+    async def stream_complete(
+        self,
+        *,
+        messages: Sequence[dict[str, Any]],
+        tools: Sequence[dict[str, Any]],
+        tool_choice: str | dict[str, Any] = "auto",
+        model: str = _LOCAL_PROVIDER,
+    ) -> AsyncIterator[dict[str, Any]]:
+        client = await self._resolve(model)
+        async for event in client.stream_complete(
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+        ):
+            yield event
+
+    def available(self, model: str) -> bool:
+        if model == _LOCAL_PROVIDER:
+            return True
+        if model == _DEEPSEEK_PROVIDER:
+            return self._provider_settings.configured()
+        return False
+
+    async def aclose(self) -> None:
+        await self._local.aclose()
+        if self._deepseek is not None:
+            await self._deepseek.aclose()
+            self._deepseek = None
+            self._deepseek_key = ""
+        for client in self._retired:
+            await client.aclose()
+        self._retired.clear()
+
+    async def _resolve(self, model: str) -> OpenAICompatibleModelClient:
+        if model == _LOCAL_PROVIDER:
+            return self._local
+        if model != _DEEPSEEK_PROVIDER:
+            raise ProviderNotConfiguredError("Unknown model provider.")
+        return await self._deepseek_client()
+
+    async def _deepseek_client(self) -> OpenAICompatibleModelClient:
+        key = self._provider_settings.get_key()
+        if not key:
+            raise ProviderNotConfiguredError(
+                "DeepSeek is not configured. Add an API key or use the local model."
+            )
+        if self._deepseek is None or key != self._deepseek_key:
+            if self._deepseek is not None:
+                self._retired.append(self._deepseek)
+            self._deepseek = OpenAICompatibleModelClient(
+                self._deepseek_config,
+                api_key=key,
+            )
+            self._deepseek_key = key
+        return self._deepseek
+
+
+def build_model_router(settings: Settings, provider_settings: ProviderSettings) -> ModelRouter:
+    return ModelRouter(
+        local_config=ProviderConfig(
+            name=_LOCAL_PROVIDER,
+            model=settings.local_model_id,
+            base_url=settings.local_model_base_url,
+            timeout_seconds=settings.local_model_timeout_seconds,
+            temperature=settings.local_model_temperature,
+            top_p=settings.local_model_top_p,
+            top_k=settings.local_model_top_k,
+            max_tokens=settings.local_model_max_tokens,
+        ),
+        deepseek_config=ProviderConfig(
+            name=_DEEPSEEK_PROVIDER,
+            model=settings.deepseek_model,
+            base_url=settings.deepseek_base_url,
+            timeout_seconds=settings.deepseek_timeout_seconds,
+            temperature=0,
+            max_tokens=1024,
+            disable_thinking=True,
+            requires_key=True,
+        ),
+        provider_settings=provider_settings,
+    )
 
 
 def _sanitize_message(message: Mapping[str, Any]) -> dict[str, Any]:

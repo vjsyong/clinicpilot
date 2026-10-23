@@ -30,6 +30,9 @@ function costOf(event: AuditEvent, pricing: AuditPricing): number | null {
   if (!usage) {
     return null;
   }
+  if (event.payload.provider === "local") {
+    return 0;
+  }
   if (
     pricing.input_per_million_usd === 0 &&
     pricing.output_per_million_usd === 0 &&
@@ -325,8 +328,8 @@ export function ExplorerPanel({ onOpenConversation, onReset }: ExplorerPanelProp
 
       {audit ? (
         <p className="sub">
-          Cost is an estimate using {audit.pricing.version} rates; verify against
-          current provider pricing.
+          Local model calls are free. Other calls use estimated{" "}
+          {audit.pricing.version} rates; verify against current provider pricing.
         </p>
       ) : null}
     </section>

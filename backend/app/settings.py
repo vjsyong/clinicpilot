@@ -49,10 +49,23 @@ class Settings(BaseSettings):
     internal_tool_key: str = DEV_INTERNAL_KEY
     internal_api_base_url: str = "http://127.0.0.1:8000"
 
+    default_model: Literal["local", "deepseek"] = "local"
+
+    # Primary local model. The endpoint is OpenAI-compatible and needs no key.
+    local_model_base_url: str = "http://127.0.0.1:8040/v1"
+    local_model_id: str = "gemma-4-26b-a4b-awq"
+    local_model_timeout_seconds: float = Field(default=120.0, gt=0)
+    local_model_temperature: float = Field(default=0.2, ge=0, le=2)
+    local_model_top_p: float = Field(default=0.95, gt=0, le=1)
+    local_model_top_k: int = Field(default=64, ge=0)
+    local_model_max_tokens: int = Field(default=2048, ge=1, le=32768)
+
+    # Optional manual backup. The key is entered at runtime and kept in memory;
+    # the environment key is only used by the separate live evaluation runner.
     deepseek_api_key: str = ""
     deepseek_model: str = "deepseek-flash"
     deepseek_base_url: str = "https://api.deepseek.com"
-    deepseek_timeout_seconds: float = 45.0
+    deepseek_timeout_seconds: float = Field(default=45.0, gt=0)
 
     database_url: str = f"sqlite:///{REPO_ROOT / 'data' / 'clinicpilot.db'}"
     frontend_dist_dir: Path = REPO_ROOT / "frontend" / "dist"
@@ -93,6 +106,14 @@ class Settings(BaseSettings):
         # configured internal base must end in a slash and include the runtime
         # prefix (or be a bare origin).
         return value if value.endswith("/") else value + "/"
+
+    @field_validator("local_model_base_url", "deepseek_base_url")
+    @classmethod
+    def _validate_provider_url(cls, value: str) -> str:
+        value = value.strip()
+        if value and not value.startswith(("http://", "https://")):
+            raise ValueError("provider base URLs must start with http:// or https://")
+        return value
 
     @field_validator("database_url")
     @classmethod
@@ -145,17 +166,34 @@ class Settings(BaseSettings):
             errors.append("DEMO_PASSWORD_HASH must be an Argon2id hash")
         if len(self.internal_tool_key) < 32:
             errors.append("INTERNAL_TOOL_KEY must be at least 32 characters")
-        if not self.deepseek_api_key or self.deepseek_api_key.startswith("sk-replace"):
-            errors.append("DEEPSEEK_API_KEY is required")
+        if not self.local_model_base_url.strip():
+            errors.append("LOCAL_MODEL_BASE_URL is required")
+        if not self.local_model_id.strip():
+            errors.append("LOCAL_MODEL_ID is required")
         provider_text = " ".join(
-            [self.deepseek_api_key, self.deepseek_model, self.deepseek_base_url]
+            [
+                self.local_model_base_url,
+                self.local_model_id,
+                self.deepseek_model,
+                self.deepseek_base_url,
+            ]
         ).lower()
         if any(marker in provider_text for marker in _TEST_PROVIDER_MARKERS):
             errors.append("production must not use the controlled CI/evaluation provider stub")
+        if self.deepseek_api_key.startswith("sk-replace"):
+            errors.append("DEEPSEEK_API_KEY still contains a placeholder value")
+        # DeepSeek may be enabled at runtime from the UI, so its endpoint must
+        # already be the trusted production endpoint even when no env key is set.
         if self.deepseek_base_url.rstrip("/") + "/" != _PRODUCTION_PROVIDER_URL:
             errors.append("DEEPSEEK_BASE_URL must be the production DeepSeek endpoint")
         combined = " ".join(
-            [self.demo_password_hash, self.internal_tool_key, self.deepseek_api_key]
+            [
+                self.demo_password_hash,
+                self.internal_tool_key,
+                self.local_model_base_url,
+                self.local_model_id,
+                self.deepseek_api_key,
+            ]
         ).lower()
         if any(marker in combined for marker in _PLACEHOLDER_MARKERS):
             errors.append("production credentials still contain placeholder values")

@@ -282,6 +282,34 @@ test('prefix routing and unauthenticated API guards', async ({ request }) => {
   );
 });
 
+test('model picker defaults local and the DeepSeek key enables the backup', async ({ page }) => {
+  await login(page);
+
+  const picker = page.getByTestId('model-picker');
+  const deepseekOption = picker.locator('option[value="deepseek"]');
+  await expect(picker).toHaveValue('local');
+  await expect(deepseekOption).toBeDisabled();
+
+  await page.getByTestId('model-settings').click();
+  await page.getByTestId('deepseek-api-key').fill('sk-e2e-test-key-0123456789');
+  await page.getByTestId('deepseek-save').click();
+  await expect(page.getByTestId('deepseek-status')).toContainText('configured');
+  await page.getByRole('button', { name: 'Close' }).click();
+  await expect(deepseekOption).toBeEnabled();
+
+  await picker.selectOption('deepseek');
+  const reply = await sendMessage(page, 'What are the opening hours for C001?');
+  expect(reply.status).toBe(200);
+  expect(reply.body.assistant_message.length).toBeGreaterThan(0);
+
+  await page.getByTestId('model-settings').click();
+  await page.getByTestId('deepseek-clear').click();
+  await expect(page.getByTestId('deepseek-status')).toContainText('not configured');
+  await page.getByRole('button', { name: 'Close' }).click();
+  await expect(picker).toHaveValue('local');
+  await expect(deepseekOption).toBeDisabled();
+});
+
 test('incomplete draft suggests dated slots and keeps the pain note through confirmation', async ({ page }) => {
   await login(page);
   await page.getByTestId('new-conversation').first().click();

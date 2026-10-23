@@ -239,6 +239,12 @@ export function App() {
                 error={assistant.error}
                 loading={assistant.loading}
                 historyError={assistant.historyError}
+                model={assistant.model}
+                models={assistant.models}
+                modelNotice={assistant.modelNotice}
+                onModelChange={assistant.chooseModel}
+                onSaveDeepSeekKey={assistant.saveDeepSeekKey}
+                onClearDeepSeekKey={assistant.clearDeepSeekKey}
                 onInputChange={assistant.setInput}
                 onSend={assistant.send}
                 onPrompt={assistant.sendText}

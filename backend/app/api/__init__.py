@@ -13,6 +13,7 @@ from app.api import (
     demo,
     health,
     knowledge,
+    models,
     pages,
 )
 
@@ -25,4 +26,5 @@ router.include_router(conversations.router)
 router.include_router(demo.router)
 router.include_router(audit.router)
 router.include_router(knowledge.router)
+router.include_router(models.router)
 router.include_router(pages.router)

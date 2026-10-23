@@ -60,6 +60,8 @@ describe("API client", () => {
       knowledge: "./api/knowledge",
       bookings: "./api/bookings",
       demoReset: "./api/demo/reset",
+      models: "./api/models",
+      deepseekKey: "./api/models/deepseek-key",
       login: "./login",
       logout: "./logout",
     });
@@ -73,6 +75,7 @@ describe("API client", () => {
       message_id: "message-1",
       message: "hello",
       patient_id: "P001",
+      model: "local",
     });
   });
 
@@ -234,6 +237,38 @@ describe("API client", () => {
       "./api/knowledge/status",
       "./api/knowledge/doctors.csv/D104",
     ]);
+  });
+
+  it("lists models and saves or clears the DeepSeek key", async () => {
+    const catalogue = {
+      default: "local",
+      models: [
+        { id: "local", label: "Gemma 26B-A4B (local)", model: "gemma", available: true },
+        { id: "deepseek", label: "DeepSeek (backup)", model: "deepseek-flash", available: true },
+      ],
+    };
+    const fetchMock = vi.fn(async (_input: string, init?: RequestInit) => {
+      if (init?.method === "PUT" || init?.method === "DELETE") {
+        return jsonResponse(catalogue);
+      }
+      return jsonResponse(catalogue);
+    });
+    const client = createApiClient({ fetchImpl: fetchMock });
+
+    await expect(client.listModels()).resolves.toEqual(catalogue);
+    await expect(client.setDeepSeekKey("sk-test")).resolves.toEqual(catalogue);
+    await expect(client.clearDeepSeekKey()).resolves.toEqual(catalogue);
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "./api/models",
+      "./api/models/deepseek-key",
+      "./api/models/deepseek-key",
+    ]);
+    expect(fetchMock.mock.calls[1]?.[1]?.method).toBe("PUT");
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
+      api_key: "sk-test",
+    });
+    expect(fetchMock.mock.calls[2]?.[1]?.method).toBe("DELETE");
   });
 
   it("streams parsed chat events from the SSE endpoint", async () => {

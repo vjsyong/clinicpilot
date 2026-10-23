@@ -12,7 +12,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse
 
 from app.auth.middleware import SECURITY_HEADERS
-from app.contracts import ProviderError
+from app.contracts import ProviderError, ProviderNotConfiguredError
 from app.services.errors import ServiceError
 
 logger = logging.getLogger("clinicpilot.errors")
@@ -66,6 +66,18 @@ def install_error_handlers(app: FastAPI) -> None:
             code=exc.code,
             message=exc.message,
             retryable=exc.retryable,
+        )
+
+    @app.exception_handler(ProviderNotConfiguredError)
+    async def _provider_not_configured(
+        request: Request, exc: ProviderNotConfiguredError
+    ) -> JSONResponse:
+        return error_response(
+            request,
+            status_code=400,
+            code="provider_not_configured",
+            message=str(exc),
+            retryable=False,
         )
 
     @app.exception_handler(ProviderError)

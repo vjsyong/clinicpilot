@@ -1,7 +1,8 @@
 # ClinicPilot: Technical Design
 
 ClinicPilot combines a conversational interface with ordinary application
-services. DeepSeek interprets requests and proposes tool calls. Python code
+services. The configured model (local Gemma by default, with an optional
+DeepSeek backup) interprets requests and proposes tool calls. Python code
 validates those calls, manages appointment state, and decides what can be saved.
 
 The goal is a small, inspectable clinic demo: answer questions from supplied
@@ -28,7 +29,7 @@ FastAPI application, one Uvicorn worker
   +-- React + TypeScript workbench, built with Vite
   +-- Authentication, conversation API, and streamed chat events
   +-- Agent controller
-  |     +-- DeepSeek via the OpenAI Python SDK
+  |     +-- Local Gemma or optional DeepSeek via the OpenAI Python SDK
   |     +-- Local clinic search: Qwen3 + BM25 + exact matches + Jina reranking
   |     +-- Patient record service
   |     +-- HTTP calls to the application's booking API
@@ -37,8 +38,9 @@ FastAPI application, one Uvicorn worker
 ```
 
 The frontend and backend ship in one Docker image. SQLite lives in a persistent
-volume. The embedding model runs in the application on CPU; DeepSeek is the
-external generation service. There is no separate AI server or vector database.
+volume. The embedding model runs in the application on CPU. The local Gemma
+endpoint is the primary generation service; DeepSeek is an optional manual
+backup. There is no separate model server or vector database inside this image.
 
 ### Why These Choices
 
@@ -74,7 +76,7 @@ returns `201` for a new record and `200` for an idempotent replay.
 
 ## Intent Recognition and Routing
 
-Intent recognition uses DeepSeek's function selection within a custom agent
+Intent recognition uses the configured model's function selection within a custom agent
 loop. There is no separate classifier or agent-framework dependency. The system
 prompt supplies the current date, P001's context, the saved draft, and tool rules.
 The model can combine several tools in a turn or ask a follow-up question.
@@ -103,18 +105,19 @@ write. This keeps execution tied to the user's approval and saved draft.
 3. **Load context.** The controller reads saved messages, patient context, and
    the current booking draft. It checks whether this message confirms a summary
    presented on the preceding assistant turn.
-4. **Call the model and tools.** DeepSeek returns text or requests a tool. The
+4. **Call the model and tools.** The selected provider returns text or requests a tool. The
    controller checks the tool name and arguments, executes permitted actions,
    and sends the result back to the model when another round is needed.
 5. **Save and display the result.** The application stores the final response,
    source references, draft, and booking events. The UI uses those structured
    results to update its transcript and booking list.
 
-The default limits are six tool rounds, 40 history messages, a 4,000-character
-user message, and a 45-second provider timeout. Model output is capped at 1,024
-tokens per call. History trimming preserves tool calls with their results. The
-configured model is `deepseek-flash`, with thinking disabled and temperature 0;
-these settings do not make live-model behavior deterministic.
+The default limits are six tool rounds, 40 history messages, and a
+4,000-character user message. The local provider uses a 120-second timeout,
+temperature 0.2, top-p 0.95, top-k 64, and a 2,048-token output cap. The optional
+DeepSeek backup uses a 45-second timeout, temperature 0, thinking disabled, and a
+1,024-token cap. History trimming preserves tool calls with their results. These
+settings do not make live-model behavior deterministic.
 
 ### Streaming and Reconnection
 
@@ -172,8 +175,9 @@ measurements and visit notes. Current bookings come from the booking REST API,
 not from model memory or old treatment history.
 
 This separation keeps general catalog search distinct from patient-specific
-data. Patient context and retrieved text are sent to DeepSeek to generate
-answers; local embeddings do not make the whole application local or offline.
+data. Patient context and retrieved text are sent to the selected provider to
+generate answers: local Gemma by default, or DeepSeek when the backup is
+explicitly selected.
 
 ## Tools and Application Rules
 
@@ -325,7 +329,7 @@ Access is deliberately simple but enforced on the server:
   the controlled test-model endpoint.
 - `/healthz` and `/readyz` accept internal probes with a loopback host and reject
   public-host or Cloudflare-forwarded requests. Readiness checks the database and
-  loaded search resources, not the availability of DeepSeek.
+  loaded search resources, not the availability of the generation provider.
 
 These controls protect a shared demo. A secret prefix and shared password do not
 replace individual accounts, roles, or clinical-system security requirements.

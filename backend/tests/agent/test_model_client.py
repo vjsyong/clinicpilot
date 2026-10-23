@@ -6,9 +6,8 @@ from typing import Any
 
 import httpx
 import pytest
-from app.agent.model_client import DeepSeekModelClient
+from app.agent.model_client import OpenAICompatibleModelClient, ProviderConfig
 from app.contracts import ProviderError
-from app.settings import Settings
 from openai import APIStatusError, APITimeoutError
 
 
@@ -31,15 +30,38 @@ class _FakeOpenAI:
         self.chat = SimpleNamespace(completions=self.completions)
 
 
-def _settings() -> Settings:
-    return Settings(
-        _env_file=None,
-        app_env="test",
-        deepseek_api_key="test-key",
-        deepseek_model="deepseek-flash",
-        deepseek_base_url="https://example.invalid",
-        deepseek_timeout_seconds=5,
+def _local_config() -> ProviderConfig:
+    return ProviderConfig(
+        name="local",
+        model="gemma-4-26b-a4b-awq",
+        base_url="http://127.0.0.1:8040/v1",
+        timeout_seconds=120,
+        temperature=0.2,
+        top_p=0.95,
+        top_k=64,
+        max_tokens=2048,
     )
+
+
+def _deepseek_config() -> ProviderConfig:
+    return ProviderConfig(
+        name="deepseek",
+        model="deepseek-flash",
+        base_url="https://api.deepseek.com",
+        timeout_seconds=45,
+        temperature=0,
+        max_tokens=1024,
+        disable_thinking=True,
+        requires_key=True,
+    )
+
+
+def _client(
+    outcomes: list[Any], config: ProviderConfig | None = None
+) -> tuple[OpenAICompatibleModelClient, _FakeOpenAI]:
+    fake = _FakeOpenAI(outcomes)
+    client = OpenAICompatibleModelClient(config or _local_config(), client=fake)  # type: ignore[arg-type]
+    return client, fake
 
 
 def _response(
@@ -55,9 +77,47 @@ def _request() -> httpx.Request:
     return httpx.Request("POST", "https://example.invalid/chat/completions")
 
 
-async def test_complete_sanitizes_internal_keys_and_sets_bounded_options() -> None:
-    fake = _FakeOpenAI([_response("hi")])
-    client = DeepSeekModelClient(_settings(), client=fake)  # type: ignore[arg-type]
+async def test_local_request_uses_gemma_sampling_and_no_deepseek_thinking() -> None:
+    client, fake = _client([_response("hi")])
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "search_knowledge",
+                "description": "search",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+
+    response = await client.complete(messages=[], tools=tools, tool_choice="auto")
+
+    assert response.content == "hi"
+    call = fake.completions.calls[0]
+    assert call["model"] == "gemma-4-26b-a4b-awq"
+    assert call["temperature"] == 0.2
+    assert call["top_p"] == 0.95
+    assert call["max_tokens"] == 2048
+    assert call["extra_body"] == {"top_k": 64}
+    assert call["tools"] == tools
+    assert call["tool_choice"] == "auto"
+
+
+async def test_deepseek_request_keeps_bounded_options_and_thinking_disabled() -> None:
+    client, fake = _client([_response("hi")], _deepseek_config())
+
+    await client.complete(messages=[], tools=[], tool_choice="auto")
+
+    call = fake.completions.calls[0]
+    assert call["model"] == "deepseek-flash"
+    assert call["temperature"] == 0
+    assert call["max_tokens"] == 1024
+    assert call["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert "top_p" not in call
+
+
+async def test_complete_sanitizes_internal_keys() -> None:
+    client, fake = _client([_response("hi")])
     messages = [
         {
             "role": "assistant",
@@ -74,27 +134,10 @@ async def test_complete_sanitizes_internal_keys_and_sets_bounded_options() -> No
         },
         {"role": "tool", "tool_call_id": "call-1", "content": "{}", "_cp_extra": 1},
     ]
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "search_knowledge",
-                "description": "search",
-                "parameters": {"type": "object", "properties": {}},
-            },
-        }
-    ]
 
-    response = await client.complete(messages=messages, tools=tools, tool_choice="auto")
+    await client.complete(messages=messages, tools=[], tool_choice="auto")
 
-    assert response.content == "hi"
     call = fake.completions.calls[0]
-    assert call["model"] == "deepseek-flash"
-    assert call["temperature"] == 0
-    assert 0 < call["max_tokens"] <= 4096
-    assert call["extra_body"] == {"thinking": {"type": "disabled"}}
-    assert call["tools"] == tools
-    assert call["tool_choice"] == "auto"
     assert "_cp_" not in json.dumps(call["messages"])
     assert messages[0]["_cp_message_id"] == "assistant-1"
 
@@ -104,8 +147,7 @@ async def test_complete_parses_tool_calls() -> None:
         id="call-9",
         function=SimpleNamespace(name="update_booking_draft", arguments='{"notes":"x"}'),
     )
-    fake = _FakeOpenAI([_response(None, tool_calls=[tool_call])])
-    client = DeepSeekModelClient(_settings(), client=fake)  # type: ignore[arg-type]
+    client, _fake = _client([_response(None, tool_calls=[tool_call])])
 
     response = await client.complete(messages=[], tools=[], tool_choice="auto")
 
@@ -117,8 +159,7 @@ async def test_complete_parses_tool_calls() -> None:
 
 
 async def test_timeout_is_retried_once() -> None:
-    fake = _FakeOpenAI([APITimeoutError(_request()), _response("recovered")])
-    client = DeepSeekModelClient(_settings(), client=fake)  # type: ignore[arg-type]
+    client, fake = _client([APITimeoutError(_request()), _response("recovered")])
 
     response = await client.complete(messages=[], tools=[], tool_choice="auto")
 
@@ -131,8 +172,7 @@ async def test_server_error_is_retried_once() -> None:
     server_error = APIStatusError(
         "upstream failed", response=httpx.Response(503, request=request), body=None
     )
-    fake = _FakeOpenAI([server_error, _response("recovered")])
-    client = DeepSeekModelClient(_settings(), client=fake)  # type: ignore[arg-type]
+    client, fake = _client([server_error, _response("recovered")])
 
     response = await client.complete(messages=[], tools=[], tool_choice="auto")
 
@@ -145,8 +185,7 @@ async def test_client_error_is_not_retried_and_becomes_provider_error() -> None:
     client_error = APIStatusError(
         "bad request", response=httpx.Response(400, request=request), body=None
     )
-    fake = _FakeOpenAI([client_error])
-    client = DeepSeekModelClient(_settings(), client=fake)  # type: ignore[arg-type]
+    client, fake = _client([client_error])
 
     with pytest.raises(ProviderError) as excinfo:
         await client.complete(messages=[], tools=[], tool_choice="auto")
@@ -157,8 +196,7 @@ async def test_client_error_is_not_retried_and_becomes_provider_error() -> None:
 
 
 async def test_unexpected_error_never_leaks_raw_message() -> None:
-    fake = _FakeOpenAI([RuntimeError("secret-looking raw message")])
-    client = DeepSeekModelClient(_settings(), client=fake)  # type: ignore[arg-type]
+    client, _fake = _client([RuntimeError("secret-looking raw message")])
 
     with pytest.raises(ProviderError) as excinfo:
         await client.complete(messages=[], tools=[], tool_choice="auto")
@@ -167,8 +205,7 @@ async def test_unexpected_error_never_leaks_raw_message() -> None:
 
 
 async def test_raw_tool_schema_and_named_tool_choice_are_converted() -> None:
-    fake = _FakeOpenAI([_response("ok")])
-    client = DeepSeekModelClient(_settings(), client=fake)  # type: ignore[arg-type]
+    client, fake = _client([_response("ok")])
     schema = {
         "name": "create_booking",
         "description": "create",

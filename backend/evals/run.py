@@ -71,7 +71,7 @@ def main() -> int:
 async def _run_live(api_key: str) -> dict[str, Any]:
     import httpx
     from app.agent.controller import AgentController
-    from app.agent.model_client import DeepSeekModelClient
+    from app.agent.model_client import OpenAICompatibleModelClient, ProviderConfig
     from app.agent.tools import RestBookingApi
     from app.api.bookings import router as bookings_router
     from app.api.errors import install_error_handlers
@@ -130,7 +130,19 @@ async def _run_live(api_key: str) -> dict[str, Any]:
             index = build_knowledge_index(settings, session_factory)
             await index.prewarm()
 
-            model = DeepSeekModelClient(settings)
+            model = OpenAICompatibleModelClient(
+                ProviderConfig(
+                    name="deepseek",
+                    model=settings.deepseek_model,
+                    base_url=settings.deepseek_base_url,
+                    timeout_seconds=settings.deepseek_timeout_seconds,
+                    temperature=0,
+                    max_tokens=1024,
+                    disable_thinking=True,
+                    requires_key=True,
+                ),
+                api_key=api_key,
+            )
             conversations = ConversationService(session_factory, clock)
             drafts = DraftService(session_factory, clock, settings)
             booking_api = RestBookingApi(settings, client=internal_client)

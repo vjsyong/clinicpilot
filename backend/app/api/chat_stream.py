@@ -15,9 +15,21 @@ from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 from starlette.responses import Response, StreamingResponse
 
-from app.api.deps import get_clock, get_settings, require_api_session, require_patient
+from app.api.deps import (
+    get_clock,
+    get_settings,
+    require_api_session,
+    require_model_available,
+    require_patient,
+)
 from app.api.locks import conversation_lock
-from app.contracts import ChatRequest, ChatResponse, ProviderError
+from app.contracts import (
+    ChatRequest,
+    ChatResponse,
+    ModelProvider,
+    ProviderError,
+    ProviderNotConfiguredError,
+)
 from app.db.models import DemoSession
 from app.services.chat_turn import execute_turn
 from app.services.conversations import ConversationService, TurnStart
@@ -34,6 +46,7 @@ _RUN_REPLAY_SECONDS = 60
 class RegenerateRequest(BaseModel):
     conversation_id: str
     message_id: str
+    model: ModelProvider = "local"
 
 
 class ChatRun:
@@ -46,11 +59,13 @@ class ChatRun:
         conversation_id: str,
         client_message_id: str,
         demo_session_id: int,
+        model: ModelProvider = "local",
     ) -> None:
         self.turn_id = turn_id
         self.conversation_id = conversation_id
         self.client_message_id = client_message_id
         self.demo_session_id = demo_session_id
+        self.model = model
         self.events: list[tuple[str, dict[str, Any]]] = []
         self.condition = asyncio.Condition()
         self.done = False
@@ -154,7 +169,10 @@ def _stream(run: ChatRun, cursor: int = 0) -> StreamingResponse:
 
 
 async def _prepare(
-    payload: ChatRequest, request: Request, demo_session: DemoSession
+    payload: ChatRequest,
+    request: Request,
+    demo_session: DemoSession,
+    model: ModelProvider,
 ) -> tuple[ConversationService, str, TurnStart]:
     patient_id = require_patient(payload.patient_id)
     settings = get_settings(request)
@@ -172,6 +190,13 @@ async def _prepare(
 
     request_hash = chat_request_hash(payload.message, patient_id)
     started = await conversations.start_turn(conversation_id, payload.message_id, request_hash)
+    if started.outcome == "new":
+        try:
+            require_model_available(request, model)
+        except ServiceError:
+            if started.turn_id is not None:
+                await conversations.fail_turn(started.turn_id)
+            raise
     return conversations, conversation_id, started
 
 
@@ -196,6 +221,7 @@ async def _run(
                 demo_session_id=str(run.demo_session_id),
                 user_text=user_text,
                 now=now,
+                model=run.model,
                 emit=run.emit,
             )
             run.response = response
@@ -204,6 +230,15 @@ async def _run(
         if run.response is None:
             await conversations.fail_turn(run.turn_id)
         await run.emit("stopped", {})
+    except ProviderNotConfiguredError as exc:
+        await run.emit(
+            "error",
+            {
+                "code": "provider_not_configured",
+                "message": str(exc),
+                "retryable": False,
+            },
+        )
     except ProviderError:
         await run.emit(
             "error",
@@ -242,7 +277,9 @@ async def chat_stream(
     request: Request,
     demo_session: Annotated[DemoSession, Depends(require_api_session)],
 ) -> Response:
-    conversations, conversation_id, started = await _prepare(payload, request, demo_session)
+    conversations, conversation_id, started = await _prepare(
+        payload, request, demo_session, payload.model
+    )
     registry = _registry(request)
 
     if started.outcome == "replay" and started.response is not None:
@@ -251,6 +288,7 @@ async def chat_stream(
             conversation_id=conversation_id,
             client_message_id=payload.message_id,
             demo_session_id=demo_session.id,
+            model=payload.model,
         )
         run.events.append(
             (
@@ -292,6 +330,7 @@ async def chat_stream(
         conversation_id=conversation_id,
         client_message_id=payload.message_id,
         demo_session_id=demo_session.id,
+        model=payload.model,
     )
     run.events.append(
         (
@@ -322,6 +361,7 @@ async def chat_regenerate(
     request: Request,
     demo_session: Annotated[DemoSession, Depends(require_api_session)],
 ) -> Response:
+    require_model_available(request, payload.model)
     conversations = ConversationService(request.app.state.session_factory, get_clock(request))
     conversation = await conversations.get_conversation(payload.conversation_id)
     if conversation is None or conversation.demo_session_id != demo_session.id:
@@ -334,6 +374,7 @@ async def chat_regenerate(
         conversation_id=prepared.conversation_id,
         client_message_id=prepared.client_message_id,
         demo_session_id=demo_session.id,
+        model=payload.model,
     )
     run.events.append(
         (

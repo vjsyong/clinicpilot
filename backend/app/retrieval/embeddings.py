@@ -36,6 +36,8 @@ class Embedder(Protocol):
     model_name: str
     revision: str
 
+    def prewarm(self) -> None: ...
+
     def embed_texts(self, texts: Sequence[str]) -> Vector: ...
 
     def embed_query(self, text: str) -> Vector: ...
@@ -99,6 +101,9 @@ class FastEmbedder:
                             threads=self.threads,
                         )
         return self._model
+
+    def prewarm(self) -> None:
+        self._load()
 
     def _embed(self, texts: Sequence[str]) -> Vector:
         model = self._load()

@@ -59,6 +59,12 @@ class FakeEmbedder:
     model_name = "fake-hashing-bow"
     revision = "test-v1"
 
+    def __init__(self) -> None:
+        self.prewarmed = False
+
+    def prewarm(self) -> None:
+        self.prewarmed = True
+
     def embed_texts(self, texts: Sequence[str]) -> NDArray[np.float32]:
         if not texts:
             return np.zeros((0, DIMENSION), dtype=np.float32)

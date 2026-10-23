@@ -52,6 +52,7 @@ async def test_ready_is_false_until_prewarm(retrieval_settings, fake_embedder) -
 
     assert index.ready() is True
     assert len(index.documents) == 11
+    assert fake_embedder.prewarmed is True
 
 
 @pytest.mark.parametrize(

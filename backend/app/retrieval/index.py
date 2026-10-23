@@ -182,6 +182,7 @@ class _KnowledgeIndex:
                 documents = documents_from_csv(self._settings)
             else:
                 documents = documents_from_db(self._session_factory)
+            self._embedder.prewarm()
             vectors = embed_documents(documents, self._embedder, self._settings)
             if vectors.shape[0] != len(documents):
                 raise RuntimeError("Embedding count does not match the document count.")
